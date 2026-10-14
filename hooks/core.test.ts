@@ -8,11 +8,13 @@ import {
   expandHome,
   firstLine,
   logPath,
+  parseRelayArgs,
   parseRoles,
   rolesPath,
   parseTag,
   planGuide,
   REPORT_LIMIT,
+  reviewHeader,
   tagLine,
   timeStamp,
   unwrap,
@@ -143,4 +145,25 @@ test('expandHome replaces a leading ~ with the home folder only', () => {
   expect(expandHome('~', '/Users/kim')).toBe('/Users/kim')
   expect(expandHome('/var/logs', '/Users/kim')).toBe('/var/logs')
   expect(expandHome('/var/~logs', '/Users/kim')).toBe('/var/~logs')
+})
+
+test('parseRelayArgs reads status, manual, auto and an auto limit of 1 to 10', () => {
+  expect(parseRelayArgs('')).toEqual({ mode: 'status' })
+  expect(parseRelayArgs('manual')).toEqual({ mode: 'manual' })
+  expect(parseRelayArgs('auto')).toEqual({ mode: 'auto', max: 3 })
+  expect(parseRelayArgs(' auto  5 ')).toEqual({ mode: 'auto', max: 5 })
+  expect(parseRelayArgs('auto 10')).toEqual({ mode: 'auto', max: 10 })
+  expect(parseRelayArgs('auto 0')).toBeNull()
+  expect(parseRelayArgs('auto 11')).toBeNull()
+  expect(parseRelayArgs('auto 2.5')).toBeNull()
+  expect(parseRelayArgs('auto x')).toBeNull()
+  expect(parseRelayArgs('manual 3')).toBeNull()
+  expect(parseRelayArgs('fast')).toBeNull()
+})
+
+test('reviewHeader names the round and tells the model how to finish', () => {
+  const header = reviewHeader(2, 3)
+  expect(header).toContain('자동 검토 2/3')
+  expect(header).toContain('"dev-session"')
+  expect(header).toContain('검토 완료')
 })

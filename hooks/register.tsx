@@ -7,23 +7,29 @@ import type {
   TurnCompleteReason,
 } from 'claude-code'
 
-import type { CommandRun, Role, Task } from '../types'
+import type { CommandRun, Review, Role, Task } from '../types'
 import { artFor, LABEL_STYLE, ORANGE } from './art'
 import {
   baseName,
   buildReport,
   dayStamp,
   DEFAULT_LOG_ROOT,
+  DEFAULT_REVIEW_ROUNDS,
   DEV_ALIAS,
   devGuide,
   entry,
   expandHome,
   firstLine,
   logPath,
+  parseRelayArgs,
   parseRoles,
   parseTag,
   planGuide,
+  RELAY_USAGE,
   REPORT_LIMIT,
+  reviewGuide,
+  reviewHeader,
+  reviewStatus,
   roleLabel,
   rolesPath,
   unwrap,
@@ -41,6 +47,11 @@ export const task = atom({ plugin: 'plan-dev-relay', key: 'task' } as const, nul
 export const edits = atom({ plugin: 'plan-dev-relay', key: 'edits' } as const, [])
 export const commands = atom({ plugin: 'plan-dev-relay', key: 'commands' } as const, [])
 export const reports = atom({ plugin: 'plan-dev-relay', key: 'reports' } as const, [])
+export const review = atom({ plugin: 'plan-dev-relay', key: 'review' } as const, {
+  mode: 'manual',
+  max: DEFAULT_REVIEW_ROUNDS,
+  rounds: 0,
+})
 
 // 엔진은 $를 받는 함수를 hook 모듈 파일 안에서만 따라간다. 그래서 입출력 함수는 이 파일에 둔다.
 const repoName = async ($: EngineInterface) => {
@@ -201,6 +212,10 @@ export const register: Register = (on, options) => {
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'role', description: `plan-dev-relay 역할 지정. ${USAGE}` })
+    await $.command.register({
+      name: 'relay',
+      description: `plan-dev-relay 보고 검토 방식 (수동/자동). ${RELAY_USAGE}`,
+    })
     return next(e)
   })
 
@@ -246,6 +261,24 @@ export const register: Register = (on, options) => {
     }
   })
 
+  on('command.run', { command: 'relay' }, async ($, e) => {
+    const parsed = parseRelayArgs(e.args)
+    if (parsed === null) return { text: RELAY_USAGE }
+    const current = await read($, review)
+    if (parsed.mode === 'status') return { text: reviewStatus(current) }
+    if ((await read($, role)) !== 'plan') {
+      return { text: '기획 세션에서만 쓸 수 있습니다. 먼저 /role plan을 입력하세요.' }
+    }
+
+    const next: Review =
+      parsed.mode === 'auto'
+        ? { mode: 'auto', max: parsed.max, rounds: 0 }
+        : { mode: 'manual', max: current.max, rounds: 0 }
+    await update($, review, () => next)
+    await log($, '[기획] 검토 모드 변경', reviewStatus(next))
+    return { text: reviewStatus(next), context: [reviewGuide(next)] }
+  })
+
   on('session.receive', async ($, e, next) => {
     const mine = await read($, role)
     const isPeer = e.origin.kind === 'peer' || e.origin.kind === 'peer-send-message'
@@ -255,10 +288,26 @@ export const register: Register = (on, options) => {
     const route = `(${sender.sessionId} → ${await $.session.id()})`
 
     if (mine === 'plan') {
-      // 다음 사용자 프롬프트의 context로 넘긴다. 보고만으로 turn을 시작하지 않는다.
-      await update($, reports, list => [...list, body])
-      await $.ui.toast(`개발 보고 도착: ${firstLine(body)}`)
+      const current = await read($, review)
       await log($, `[기획] 보고 수신 ${route}`, unwrap(body))
+
+      if (current.mode === 'auto' && current.rounds < current.max) {
+        // 자동 검토: 머리말을 붙여 넘기면 엔진이 기획 세션의 turn을 시작한다.
+        const round = current.rounds + 1
+        await update($, review, r => ({ ...r, rounds: r.rounds + 1 }))
+        await $.ui.toast(`개발 보고 도착: ${firstLine(body)} (자동 검토 ${round}/${current.max})`)
+        await log($, `[기획] 자동 검토 ${round}/${current.max}`, firstLine(body))
+        return next({ ...e, text: `${reviewHeader(round, current.max)}\n${body}` })
+      }
+
+      // 수동이거나 자동 검토 한도에 닿았으면 다음 사용자 프롬프트의 context로 넘긴다.
+      await update($, reports, list => [...list, body])
+      if (current.mode === 'auto') {
+        await $.ui.toast(`자동 검토 ${current.max}회 도달, 확인이 필요합니다: ${firstLine(body)}`)
+        await log($, '[기획] 자동 검토 한도 도달', `${current.max}회. 다음 사용자 프롬프트와 함께 전달한다.`)
+      } else {
+        await $.ui.toast(`개발 보고 도착: ${firstLine(body)}`)
+      }
       return { consumed: 'plan-dev-relay: 기획 세션은 짝의 보고를 기록만 한다' }
     }
 
@@ -271,7 +320,13 @@ export const register: Register = (on, options) => {
     const composed = await next(e)
     const mine = await read($, role)
     if (mine === null) return composed
-    const text = mine === 'plan' ? planGuide() : devGuide()
+    const current = await read($, review)
+    const text =
+      mine === 'dev'
+        ? devGuide()
+        : current.mode === 'auto'
+          ? `${planGuide()}\n\n${reviewGuide(current)}`
+          : planGuide()
     return {
       sections: [...composed.sections, { id: `${P}:guide`, text, scope: 'session' as const }],
     }
@@ -316,6 +371,8 @@ export const register: Register = (on, options) => {
       return next(e)
     }
 
+    // 사용자가 직접 입력하면 자동 검토 횟수를 처음부터 다시 센다.
+    await update($, review, r => (r.rounds === 0 ? r : { ...r, rounds: 0 }))
     const pending = await read($, reports)
     if (pending.length === 0) return next(e)
     const context = pending.map(report => `[plan-dev-relay] 개발 세션 보고:\n${report}`)

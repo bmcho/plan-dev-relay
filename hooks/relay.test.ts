@@ -587,3 +587,92 @@ test('/role writes roles.json and the log under the logRoot option', { options: 
   expect(world.files.get('/var/plan-logs/control-center/2026-10-14.md')).toContain('# control-center plan-dev log 2026-10-14')
   expect(world.files.has(ROLES)).toBe(false)
 })
+
+// 자동 검토 모드 (/relay)
+const planWithDev = async ($: Engine, on: On, world: World) => {
+  world.files.set(ROLES, JSON.stringify({ dev: { sessionId: 'S-DEV', updatedAt: 't' } }))
+  engine(on, 'S-PLAN', world)
+  await $.command.run({ command: 'role', args: 'plan' } as never)
+}
+
+const report = (text: string) =>
+  ({ origin: { kind: 'peer', plugin: 'plan-dev-relay' }, text: wrap(tag('dev', 'S-DEV', text)) }) as never
+
+const userPrompt = (text: string) =>
+  ({ text, wait: false, origin: { kind: 'composer' } }) as never
+
+test('/relay auto 2 switches the plan session to automatic review and /relay shows it', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+
+  const switched = await $.command.run({ command: 'relay', args: 'auto 2' } as never)
+  const status = await $.command.run({ command: 'relay', args: '' } as never)
+
+  expect(switched.text).toContain('자동')
+  expect(switched.text).toContain('최대 2회')
+  expect((switched.context ?? []).join('\n')).toContain('자동 검토 모드')
+  expect(status.text).toContain('자동')
+  expect(world.files.get(LOG)).toContain('[기획] 검토 모드 변경')
+})
+
+test('auto review hands each report to the plan model with a header, up to the limit', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+  await $.command.run({ command: 'relay', args: 'auto 2' } as never)
+
+  const first = await $.session.receive(report('[개발 보고] 1차\n본문1'))
+  const second = await $.session.receive(report('[개발 보고] 2차\n본문2'))
+  const third = await $.session.receive(report('[개발 보고] 3차\n본문3'))
+
+  expect(first.consumed).toBeUndefined()
+  expect(first.text?.startsWith('[plan-dev-relay 자동 검토 1/2]')).toBe(true)
+  expect(first.text).toContain('[개발 보고] 1차\n본문1')
+  expect(second.text?.startsWith('[plan-dev-relay 자동 검토 2/2]')).toBe(true)
+  expect(third.consumed).toBeDefined()
+  expect(world.toasts.join('\n')).toContain('자동 검토 2회 도달')
+  const log = world.files.get(LOG) ?? ''
+  expect(log).toContain('[기획] 자동 검토 1/2')
+  expect(log).toContain('[기획] 자동 검토 2/2')
+  expect(log).toContain('[기획] 자동 검토 한도 도달')
+
+  const next = await $.prompt.submit(userPrompt('확인해 줘'))
+  expect((next.context ?? []).join('\n')).toContain('[개발 보고] 3차')
+})
+
+test('a user prompt resets the automatic review count', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+  await $.command.run({ command: 'relay', args: 'auto 1' } as never)
+
+  await $.session.receive(report('[개발 보고] 1차'))
+  await $.prompt.submit(userPrompt('다음 작업 지시해'))
+  const after = await $.session.receive(report('[개발 보고] 2차'))
+
+  expect(after.consumed).toBeUndefined()
+  expect(after.text?.startsWith('[plan-dev-relay 자동 검토 1/1]')).toBe(true)
+})
+
+test('/relay manual goes back to collecting reports for the next prompt', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+  await $.command.run({ command: 'relay', args: 'auto' } as never)
+  await $.command.run({ command: 'relay', args: 'manual' } as never)
+
+  const received = await $.session.receive(report('[개발 보고] 수동'))
+
+  expect(received.consumed).toBeDefined()
+  expect(world.toasts.join('\n')).toContain('개발 보고 도착: [개발 보고] 수동')
+})
+
+test('/relay refuses to switch outside a plan session and rejects bad arguments', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+
+  const refused = await $.command.run({ command: 'relay', args: 'auto' } as never)
+  const bad = await $.command.run({ command: 'relay', args: 'auto 0' } as never)
+
+  expect(refused.text).toContain('기획 세션에서만')
+  expect(bad.text).toContain('사용법: /relay')
+})

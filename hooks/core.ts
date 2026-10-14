@@ -1,4 +1,4 @@
-import type { CommandRun, Role, Task } from '../types'
+import type { CommandRun, Review, Role, Task } from '../types'
 
 // userConfig.logRoot의 기본값. ~는 각자의 홈 폴더로 바뀐다.
 export const DEFAULT_LOG_ROOT = '~/Documents/claude/plan-dev-log'
@@ -112,6 +112,45 @@ export const planGuide = () =>
     '지시에는 첫 줄에 작업 제목, 이어서 목표, 대상 파일, 완료 조건을 적는다.',
     '개발 세션의 보고는 사용자의 다음 프롬프트와 함께 전달된다. 보고를 기다리며 폴링하지 않는다.',
   ].join('\n')
+
+export const DEFAULT_REVIEW_ROUNDS = 3
+
+export const RELAY_USAGE = '사용법: /relay [manual | auto [1-10]]'
+
+export type RelayArgs = { mode: 'status' } | { mode: 'manual' } | { mode: 'auto'; max: number }
+
+export const parseRelayArgs = (args: string): RelayArgs | null => {
+  const [word = '', count, ...rest] = args.trim().split(/\s+/)
+  if (rest.length > 0) return null
+  if (word === '') return { mode: 'status' }
+  if (word === 'manual') return count === undefined ? { mode: 'manual' } : null
+  if (word !== 'auto') return null
+  if (count === undefined) return { mode: 'auto', max: DEFAULT_REVIEW_ROUNDS }
+  const max = Number(count)
+  return Number.isInteger(max) && max >= 1 && max <= 10 ? { mode: 'auto', max } : null
+}
+
+export const reviewStatus = (review: Review) =>
+  review.mode === 'auto'
+    ? `검토 모드: 자동 (최대 ${review.max}회, 지금 ${review.rounds}회 진행)`
+    : '검토 모드: 수동 (보고는 다음 프롬프트와 함께 전달)'
+
+// 자동 검토 때 보고 맨 위에 붙여 기획 모델이 바로 검토하게 한다.
+export const reviewHeader = (round: number, max: number) =>
+  `[plan-dev-relay 자동 검토 ${round}/${max}] 아래 개발 보고를 검토한다. ` +
+  `부족하면 SendMessage로 "${DEV_ALIAS}"에 다시 지시하고, 충분하면 '검토 완료'라고 답하고 더 지시하지 않는다.`
+
+export const reviewGuide = (review: Review) =>
+  review.mode === 'auto'
+    ? [
+        '# plan-dev-relay: 자동 검토 모드',
+        `개발 보고가 오면 바로 검토한다. 부족하면 SendMessage로 "${DEV_ALIAS}"에 다시 지시하고, 충분하면 '검토 완료'라고 답하고 더 지시하지 않는다.`,
+        `자동 검토는 최대 ${review.max}회까지다. 그 뒤의 보고는 사용자의 다음 프롬프트와 함께 온다.`,
+      ].join('\n')
+    : [
+        '# plan-dev-relay: 수동 검토 모드',
+        '개발 보고는 사용자의 다음 프롬프트와 함께 전달된다. 사용자가 요청할 때만 검토하고 다시 지시한다.',
+      ].join('\n')
 
 export const devGuide = () =>
   [
