@@ -134,16 +134,15 @@ Claude Code 세션 두 개를 **기획 세션**과 **개발 세션**으로 짝�
 이 저장소는 플러그인이면서 마켓플레이스입니다. Claude Code 안에서 두 줄이면 설치됩니다.
 
 ```
-/plugin marketplace add ssh://git@git.ahha.tf:2222/se1_project/plan-dev-relay.git
+/plugin marketplace add bmcho/plan-dev-relay
 /plugin install plan-dev-relay@plan-dev-relay
 ```
 
-- 위 주소는 사내 GitLab의 SSH 주소입니다. GitLab 계정에 SSH 키가 등록되어 있어야 합니다.
-- 이 GitLab에 처음 접속하는 컴퓨터라면 `ssh -p 2222 git@git.ahha.tf`로 한 번 접속해서 호스트 키를 등록하세요.
+- `bmcho/plan-dev-relay`는 GitHub 저장소 https://github.com/bmcho/plan-dev-relay 를 줄여 쓴 주소입니다.
 - 터미널에서 설치할 수도 있습니다.
 
   ```
-  claude plugin marketplace add ssh://git@git.ahha.tf:2222/se1_project/plan-dev-relay.git
+  claude plugin marketplace add bmcho/plan-dev-relay
   claude plugin install plan-dev-relay@plan-dev-relay
   ```
 
@@ -158,7 +157,7 @@ Claude Code 세션 두 개를 **기획 세션**과 **개발 세션**으로 짝�
 {
   "extraKnownMarketplaces": {
     "plan-dev-relay": {
-      "source": { "source": "git", "url": "ssh://git@git.ahha.tf:2222/se1_project/plan-dev-relay.git" }
+      "source": { "source": "github", "repo": "bmcho/plan-dev-relay" }
     }
   },
   "enabledPlugins": { "plan-dev-relay@plan-dev-relay": true }
@@ -170,7 +169,7 @@ Claude Code 세션 두 개를 **기획 세션**과 **개발 세션**으로 짝�
 ### 방법 C. 폴더로 직접 불러오기 (mod를 고치면서 쓸 때)
 
 ```
-git clone ssh://git@git.ahha.tf:2222/se1_project/plan-dev-relay.git
+git clone https://github.com/bmcho/plan-dev-relay.git
 ```
 
 `~/.claude/settings.json`에 clone한 폴더 경로를 넣습니다.
