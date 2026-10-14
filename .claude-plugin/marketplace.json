@@ -1,0 +1,13 @@
+{
+  "name": "plan-dev-relay",
+  "description": "기획/개발 두 Claude Code 세션을 이어 주는 plan-dev-relay mod 배포용 마켓플레이스",
+  "owner": { "name": "조병민", "email": "byeongmin.cho@ahha.ai" },
+  "plugins": [
+    {
+      "name": "plan-dev-relay",
+      "source": "./",
+      "description": "기획/개발 두 Claude Code 세션을 짝지어 지시, 자동 보고, 로그, 역할별 애니메이션을 제공한다",
+      "version": "0.1.0"
+    }
+  ]
+}
