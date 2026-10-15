@@ -21,8 +21,10 @@ import {
   expandHome,
   firstLine,
   logPath,
+  MODE_LABEL,
   parseRelayArgs,
   parseRoles,
+  parseStop,
   parseTag,
   parseVerdict,
   planGuide,
@@ -214,10 +216,16 @@ const finishReview = async ($: EngineInterface, answer: string, reason: TurnComp
     const ending = ENDING[reason]
     await $.ui.toast('검수 보고서 누락: 마지막 답변에 "검수 결과:" 줄이 없습니다')
     await log($, `[기획] 검수 보고 누락${ending === undefined ? '' : ` ${ending}`}`, answer || '(답변 없음)')
-    return
+  } else {
+    await $.ui.toast(`검수 ${verdict}: ${firstLine(answer)}`)
+    await log($, `[기획] 검수 보고 (${verdict})`, answer)
   }
-  await $.ui.toast(`검수 ${verdict}: ${firstLine(answer)}`)
-  await log($, `[기획] 검수 보고 (${verdict})`, answer)
+  // 풀오토가 되돌리기 어려운 작업 앞에서 멈췄으면 따로 알린다.
+  const stop = parseStop(answer)
+  if (stop !== null) {
+    await $.ui.toast(`사용자 확인 필요: ${stop}`)
+    await log($, '[기획] 사용자 확인 필요', stop)
+  }
 }
 
 const USAGE = '사용법: /role plan | dev | off'
@@ -230,7 +238,7 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'role', description: `plan-dev-relay 역할 지정. ${USAGE}` })
     await $.command.register({
       name: 'relay',
-      description: `plan-dev-relay 검수에서 반려됐을 때 다시 지시하는 방식 (수동/자동). ${RELAY_USAGE}`,
+      description: `plan-dev-relay 검수 뒤 진행 방식 (수동/오토/풀오토). ${RELAY_USAGE}`,
     })
     return next(e)
   })
@@ -287,11 +295,11 @@ export const register: Register = (on, options) => {
     }
 
     const next: Review =
-      parsed.mode === 'auto'
-        ? { mode: 'auto', max: parsed.max, rounds: 0 }
-        : { mode: 'manual', max: current.max, rounds: 0 }
+      parsed.mode === 'manual'
+        ? { mode: 'manual', max: current.max, rounds: 0 }
+        : { mode: parsed.mode, max: parsed.max, rounds: 0 }
     await update($, review, () => next)
-    await log($, '[기획] 다시 지시 방식 변경', reviewStatus(next))
+    await log($, '[기획] 릴레이 모드 변경', reviewStatus(next))
     return { text: reviewStatus(next), context: [reviewGuide(next)] }
   })
 
@@ -308,19 +316,23 @@ export const register: Register = (on, options) => {
       await log($, `[기획] 보고 수신 ${route}`, unwrap(body))
 
       // 검수는 모드와 관계없이 한다. 머리말을 붙여 넘기면 엔진이 기획 모델에 전달한다.
-      // 자동 모드는 한도 안에서만 반려 때 스스로 다시 지시한다.
-      const isAuto = current.mode === 'auto'
-      const retry = isAuto && current.rounds < current.max ? { round: current.rounds + 1, max: current.max } : null
-      if (retry !== null) await update($, review, r => ({ ...r, rounds: r.rounds + 1 }))
+      // 오토와 풀오토는 한도 안에서만 사람 없이 이어 간다.
+      const step =
+        current.mode !== 'manual' && current.rounds < current.max
+          ? { mode: current.mode, round: current.rounds + 1, max: current.max }
+          : null
+      if (step !== null) await update($, review, r => ({ ...r, rounds: r.rounds + 1 }))
+      const label = MODE_LABEL[current.mode]
       const note =
-        retry !== null
-          ? `자동 다시 지시 ${retry.round}/${retry.max}`
-          : isAuto
-            ? `자동 다시 지시 한도 ${current.max}회 도달`
-            : '수동'
-      await $.ui.toast(`개발 보고 도착: ${firstLine(body)} (검수 시작${isAuto ? `, ${note}` : ''})`)
+        step !== null
+          ? `${label} ${step.round}/${step.max}`
+          : current.mode === 'manual'
+            ? label
+            : `${label} 한도 ${current.max}회 도달`
+      const suffix = current.mode === 'manual' ? '' : `, ${note}`
+      await $.ui.toast(`개발 보고 도착: ${firstLine(body)} (검수 시작${suffix})`)
       await log($, `[기획] 검수 요청 (${note})`, firstLine(body))
-      return next({ ...e, text: `${reviewHeader(retry)}\n${body}` })
+      return next({ ...e, text: `${reviewHeader(step)}\n${body}` })
     }
 
     await startTask($, { source: 'plan', title: firstLine(body), prompt: body })

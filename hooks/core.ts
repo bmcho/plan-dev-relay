@@ -118,53 +118,96 @@ export const planGuide = () =>
   ].join('\n')
 
 export const DEFAULT_REVIEW_ROUNDS = 3
+export const DEFAULT_FULL_ROUNDS = 20
 
-export const RELAY_USAGE = '사용법: /relay [manual | auto [1-10]]'
+export const RELAY_USAGE = '사용법: /relay [manual | auto [1-10] | full [1-50]]'
 
-export type RelayArgs = { mode: 'status' } | { mode: 'manual' } | { mode: 'auto'; max: number }
+export const MODE_LABEL: Record<Review['mode'], string> = { manual: '수동', auto: '오토', full: '풀오토' }
+
+export type RelayArgs = { mode: 'status' } | { mode: 'manual' } | { mode: 'auto' | 'full'; max: number }
+
+// 모드별 기본 횟수와 상한
+const LIMITS = {
+  auto: { fallback: DEFAULT_REVIEW_ROUNDS, top: 10 },
+  full: { fallback: DEFAULT_FULL_ROUNDS, top: 50 },
+} as const
 
 export const parseRelayArgs = (args: string): RelayArgs | null => {
   const [word = '', count, ...rest] = args.trim().split(/\s+/)
   if (rest.length > 0) return null
   if (word === '') return { mode: 'status' }
   if (word === 'manual') return count === undefined ? { mode: 'manual' } : null
-  if (word !== 'auto') return null
-  if (count === undefined) return { mode: 'auto', max: DEFAULT_REVIEW_ROUNDS }
+  if (word !== 'auto' && word !== 'full') return null
+  const { fallback, top } = LIMITS[word]
+  if (count === undefined) return { mode: word, max: fallback }
   const max = Number(count)
-  return Number.isInteger(max) && max >= 1 && max <= 10 ? { mode: 'auto', max } : null
+  return Number.isInteger(max) && max >= 1 && max <= top ? { mode: word, max } : null
 }
 
-export const reviewStatus = (review: Review) =>
-  review.mode === 'auto'
-    ? `다시 지시: 자동 (검수에서 반려면 기획이 다시 지시, 최대 ${review.max}회, 지금 ${review.rounds}회 진행)`
-    : '다시 지시: 수동 (검수는 항상 하고, 반려 때 다시 지시는 사용자가 정함)'
+export const reviewStatus = (review: Review) => {
+  const progress = `최대 ${review.max}회, 지금 ${review.rounds}회 진행`
+  if (review.mode === 'auto') return `모드: 오토 (검수 후 반려면 기획이 고칠 점을 다시 지시, ${progress})`
+  if (review.mode === 'full') return `모드: 풀오토 (검수, 다시 지시, 다음 작업 지시와 결정까지 기획이 함, ${progress})`
+  return '모드: 수동 (검수만 하고, 다시 지시는 사용자가 정함)'
+}
 
 // prompt.submit에서 이 표시로 검수 요청이 들어간 turn을 알아본다.
 export const REVIEW_MARK = '[plan-dev-relay 검수 요청'
 
-export type Retry = { round: number; max: number }
+// 사람 없이 이어 가는 단계. 없으면 검수만 하고 멈춘다.
+export type Step = { mode: 'auto' | 'full'; round: number; max: number }
 
-// 자동 모드의 다시 지시가 다음 단계 작업으로 번지지 않게 한다.
+// 오토의 다시 지시가 다음 단계 작업으로 번지지 않게 한다.
 const RETRY_SCOPE = '다시 지시에는 이번 검수에서 나온 고칠 점만 담는다. 새 작업이나 다음 단계는 지시하지 않는다.'
 
-// 보고 맨 위에 붙여 기획 모델이 바로 검수하게 한다. retry가 없으면 반려여도 다시 지시하지 않는다.
-export const reviewHeader = (retry: Retry | null) =>
-  [
-    `${REVIEW_MARK}${retry === null ? '' : ` ${retry.round}/${retry.max}`}] 아래 개발 보고를 검수한다.`,
-    '1. 보고의 검수 기준(원래 지시)에 적힌 완료 조건과 이 세션의 계획(계획 문서가 있으면 그 문서)에 맞는지 항목마다 확인한다.',
-    '2. 보고만 믿지 말고 git diff, 바뀐 파일 읽기, 테스트 실행으로 직접 확인한다. 코드는 고치지 않는다.',
-    retry === null
-      ? '3. 반려여도 개발 세션에 다시 지시하지 않는다. 다시 지시할지는 사용자가 정한다.'
-      : `3. 반려면 고칠 점을 SendMessage로 "${DEV_ALIAS}"에 다시 지시한다. ${RETRY_SCOPE} 통과면 더 지시하지 않는다.`,
-    '4. 이번 turn의 마지막 답변으로 아래 형식의 검수 보고서를 쓴다.',
-    '[검수 보고] <작업 제목>',
-    '검수 결과: <통과 또는 반려>',
-    '완료 조건 확인:',
-    '- <조건>: <충족 또는 미충족> — <근거>',
-    '확인 방법:',
-    '- <실행한 명령이나 읽은 파일>: <결과>',
-    '문제와 고칠 점: <반려일 때 고칠 점, 통과면 없음>',
+const FULL_DECIDE =
+  '사용자에게 묻지 않는다. 선택이 필요하면 계획과 근거로 스스로 정하고, 결정과 근거를 지시와 검수 보고서의 결정 항목에 적는다.'
+
+const FULL_STOP =
+  '단, 되돌리기 어렵거나 바깥으로 나가는 작업(git push, 배포, 운영 데이터 삭제, 외부 전송)은 지시하지 않는다. ' +
+  '검수 보고서의 사용자 확인 필요 항목에 이유를 적고 멈춘다.'
+
+const NEXT: Record<'none' | Step['mode'], string[]> = {
+  none: ['반려여도 개발 세션에 다시 지시하지 않는다. 다시 지시할지는 사용자가 정한다.'],
+  auto: [`반려면 고칠 점을 SendMessage로 "${DEV_ALIAS}"에 다시 지시한다. ${RETRY_SCOPE} 통과면 더 지시하지 않는다.`],
+  full: [
+    `반려면 고칠 점을 SendMessage로 "${DEV_ALIAS}"에 다시 지시한다. 통과면 계획 문서에서 다음 작업을 정해 SendMessage로 지시한다. 계획이 모두 끝났으면 더 지시하지 않는다.`,
+    FULL_DECIDE,
+    FULL_STOP,
+  ],
+}
+
+const REPORT_FORMAT = [
+  '[검수 보고] <작업 제목>',
+  '검수 결과: <통과 또는 반려>',
+  '완료 조건 확인:',
+  '- <조건>: <충족 또는 미충족> — <근거>',
+  '확인 방법:',
+  '- <실행한 명령이나 읽은 파일>: <결과>',
+  '문제와 고칠 점: <반려일 때 고칠 점, 통과면 없음>',
+]
+
+const FULL_FORMAT = [
+  '결정: <스스로 정한 것과 근거, 없으면 없음>',
+  '다음 지시: <보낸 지시의 제목, 없으면 없음>',
+  '사용자 확인 필요: <멈춘 이유, 멈추지 않았으면 없음>',
+]
+
+// 보고 맨 위에 붙여 기획 모델이 바로 검수하게 한다. step이 없으면 검수만 하고 멈춘다.
+export const reviewHeader = (step: Step | null) => {
+  const steps = [
+    '보고의 검수 기준(원래 지시)에 적힌 완료 조건과 이 세션의 계획(계획 문서가 있으면 그 문서)에 맞는지 항목마다 확인한다.',
+    '보고만 믿지 말고 git diff, 바뀐 파일 읽기, 테스트 실행으로 직접 확인한다. 코드는 고치지 않는다.',
+    ...NEXT[step?.mode ?? 'none'],
+    '이번 turn의 마지막 답변으로 아래 형식의 검수 보고서를 쓴다.',
+  ]
+  return [
+    `${REVIEW_MARK}${step === null ? '' : ` ${MODE_LABEL[step.mode]} ${step.round}/${step.max}`}] 아래 개발 보고를 검수한다.`,
+    ...steps.map((text, i) => `${i + 1}. ${text}`),
+    ...REPORT_FORMAT,
+    ...(step?.mode === 'full' ? FULL_FORMAT : []),
   ].join('\n')
+}
 
 // 모델이 굵게(**)나 목록(-)으로 감싸 써도 판정 줄로 읽는다.
 const VERDICT = /^[\s>*#-]*검수 결과[\s*]*:[\s*]*(통과|반려)/m
@@ -174,13 +217,34 @@ export const parseVerdict = (answer: string): '통과' | '반려' | null => {
   return found === null ? null : (found[1] as '통과' | '반려')
 }
 
+const STOP = /^[\s>*#-]*사용자 확인 필요[\s*]*:[\s*]*(.*)$/m
+
+// 풀오토가 사용자 확인을 기다리며 멈춘 이유. '없음'이나 형식 안내 줄은 멈춤이 아니다.
+export const parseStop = (answer: string) => {
+  const reason = STOP.exec(answer)?.[1]?.trim() ?? ''
+  return reason === '' || reason.startsWith('없음') || reason.startsWith('<') ? null : reason
+}
+
+const GUIDE: Record<Review['mode'], (max: number) => string[]> = {
+  manual: () => ['모드: 수동. 반려여도 개발 세션에 다시 지시하지 않는다. 다시 지시할지는 사용자가 정한다.'],
+  auto: max => [
+    `모드: 오토. 반려면 SendMessage로 "${DEV_ALIAS}"에 고칠 점을 다시 지시한다. ${RETRY_SCOPE} 최대 ${max}회까지이고, 그 뒤에는 검수만 하고 다시 지시는 사용자가 정한다.`,
+  ],
+  full: max => [
+    '모드: 풀오토. 기획, 계획, 결정, 검수, 다시 지시, 다음 작업 지시를 스스로 한다.',
+    '사용자의 목표를 받으면 계획을 세워 계획 문서에 직접 적고, 사용자 승인 없이 바로 첫 작업을 지시한다. 설계나 계획 승인, 선택지 결정도 스스로 정한다.',
+    '계획과 진행 상태는 그 문서에 적고, 다음 작업은 그 문서를 기준으로 정한다.',
+    FULL_DECIDE,
+    FULL_STOP,
+    `사람 없이 이어 가는 검수는 최대 ${max}회까지다. 그 뒤에는 검수만 하고 멈춘다.`,
+  ],
+}
+
 export const reviewGuide = (review: Review) =>
   [
     '# plan-dev-relay: 검수',
     '개발 세션의 보고는 모드와 관계없이 모두 검수한다. mod가 보고 앞에 검수 요청과 절차를 붙인다.',
-    review.mode === 'auto'
-      ? `다시 지시: 자동. 반려면 SendMessage로 "${DEV_ALIAS}"에 고칠 점을 다시 지시한다. ${RETRY_SCOPE} 최대 ${review.max}회까지이고, 그 뒤에는 검수만 하고 다시 지시는 사용자가 정한다.`
-      : '다시 지시: 수동. 반려여도 개발 세션에 다시 지시하지 않는다. 다시 지시할지는 사용자가 정한다.',
+    ...GUIDE[review.mode](review.max),
   ].join('\n')
 
 export const devGuide = () =>

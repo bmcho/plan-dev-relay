@@ -563,7 +563,7 @@ test('/role writes roles.json and the log under the logRoot option', { options: 
   expect(world.files.has(ROLES)).toBe(false)
 })
 
-// 자동 검토 모드 (/relay)
+// 진행 모드 (/relay)
 const planWithDev = async ($: Engine, on: On, world: World) => {
   world.files.set(ROLES, JSON.stringify({ dev: { sessionId: 'S-DEV', updatedAt: 't' } }))
   engine(on, 'S-PLAN', world)
@@ -583,11 +583,11 @@ test('/relay auto 2 switches the plan session to automatic review and /relay sho
   const switched = await $.command.run({ command: 'relay', args: 'auto 2' } as never)
   const status = await $.command.run({ command: 'relay', args: '' } as never)
 
-  expect(switched.text).toContain('자동')
+  expect(switched.text).toContain('오토')
   expect(switched.text).toContain('최대 2회')
-  expect((switched.context ?? []).join('\n')).toContain('다시 지시: 자동')
-  expect(status.text).toContain('자동')
-  expect(world.files.get(LOG)).toContain('[기획] 다시 지시 방식 변경')
+  expect((switched.context ?? []).join('\n')).toContain('모드: 오토')
+  expect(status.text).toContain('오토')
+  expect(world.files.get(LOG)).toContain('[기획] 릴레이 모드 변경')
 })
 
 test('auto mode lets the plan re-instruct up to the limit, then still asks for an inspection', async ($, on) => {
@@ -600,17 +600,17 @@ test('auto mode lets the plan re-instruct up to the limit, then still asks for a
   const third = await $.session.receive(report('[개발 보고] 3차\n본문3'))
 
   expect(first.consumed).toBeUndefined()
-  expect(first.text?.startsWith('[plan-dev-relay 검수 요청 1/2]')).toBe(true)
+  expect(first.text?.startsWith('[plan-dev-relay 검수 요청 오토 1/2]')).toBe(true)
   expect(first.text).toContain('[개발 보고] 1차\n본문1')
-  expect(second.text?.startsWith('[plan-dev-relay 검수 요청 2/2]')).toBe(true)
+  expect(second.text?.startsWith('[plan-dev-relay 검수 요청 오토 2/2]')).toBe(true)
   expect(third.consumed).toBeUndefined()
   expect(third.text?.startsWith('[plan-dev-relay 검수 요청]')).toBe(true)
   expect(third.text).toContain('다시 지시하지 않는다')
-  expect(world.toasts.join('\n')).toContain('자동 다시 지시 한도 2회 도달')
+  expect(world.toasts.join('\n')).toContain('오토 한도 2회 도달')
   const log = world.files.get(LOG) ?? ''
-  expect(log).toContain('[기획] 검수 요청 (자동 다시 지시 1/2)')
-  expect(log).toContain('[기획] 검수 요청 (자동 다시 지시 2/2)')
-  expect(log).toContain('[기획] 검수 요청 (자동 다시 지시 한도 2회 도달)')
+  expect(log).toContain('[기획] 검수 요청 (오토 1/2)')
+  expect(log).toContain('[기획] 검수 요청 (오토 2/2)')
+  expect(log).toContain('[기획] 검수 요청 (오토 한도 2회 도달)')
 })
 
 test('a user prompt resets the automatic review count', async ($, on) => {
@@ -623,7 +623,7 @@ test('a user prompt resets the automatic review count', async ($, on) => {
   const after = await $.session.receive(report('[개발 보고] 2차'))
 
   expect(after.consumed).toBeUndefined()
-  expect(after.text?.startsWith('[plan-dev-relay 검수 요청 1/1]')).toBe(true)
+  expect(after.text?.startsWith('[plan-dev-relay 검수 요청 오토 1/1]')).toBe(true)
 })
 
 test('/relay manual stops automatic re-instruction but keeps the inspection', async ($, on) => {
@@ -648,9 +648,11 @@ test('/relay refuses to switch outside a plan session and rejects bad arguments'
 
   const refused = await $.command.run({ command: 'relay', args: 'auto' } as never)
   const bad = await $.command.run({ command: 'relay', args: 'auto 0' } as never)
+  const tooMany = await $.command.run({ command: 'relay', args: 'full 51' } as never)
 
   expect(refused.text).toContain('기획 세션에서만')
   expect(bad.text).toContain('사용법: /relay')
+  expect(tooMany.text).toContain('사용법: /relay')
 })
 
 // 검수 보고서: 검수 요청이 들어간 turn의 마지막 답변
@@ -714,4 +716,49 @@ test('plan also logs an inspection report the user asked for', async ($, on) => 
   await ordinaryTurn($, '[검수 보고] 경로 API\n**검수 결과:** 통과')
 
   expect(world.files.get(LOG)).toContain('[기획] 검수 보고 (통과)')
+})
+
+test('/relay full switches to full auto with a default limit of 20', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+
+  const switched = await $.command.run({ command: 'relay', args: 'full' } as never)
+
+  expect(switched.text).toContain('풀오토')
+  expect(switched.text).toContain('최대 20회')
+  expect((switched.context ?? []).join('\n')).toContain('사용자 승인 없이')
+  expect(world.files.get(LOG)).toContain('[기획] 릴레이 모드 변경')
+})
+
+test('full auto asks the plan to move on after each report, then only inspects past the limit', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+  await $.command.run({ command: 'relay', args: 'full 2' } as never)
+
+  const first = await $.session.receive(report('[개발 보고] 1차'))
+  await $.session.receive(report('[개발 보고] 2차'))
+  const third = await $.session.receive(report('[개발 보고] 3차'))
+
+  expect(first.text?.startsWith('[plan-dev-relay 검수 요청 풀오토 1/2]')).toBe(true)
+  expect(first.text).toContain('다음 작업을 정해')
+  expect(third.text?.startsWith('[plan-dev-relay 검수 요청]')).toBe(true)
+  expect(third.text).toContain('다시 지시하지 않는다')
+  expect(world.toasts.join('\n')).toContain('풀오토 한도 2회 도달')
+  const log = world.files.get(LOG) ?? ''
+  expect(log).toContain('[기획] 검수 요청 (풀오토 1/2)')
+  expect(log).toContain('[기획] 검수 요청 (풀오토 한도 2회 도달)')
+})
+
+test('plan flags an inspection that stopped for the user', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+  await $.command.run({ command: 'relay', args: 'full' } as never)
+  const received = await $.session.receive(report('[개발 보고] 배포 준비'))
+
+  const answer =
+    '[검수 보고] 배포 준비\n검수 결과: 통과\n다음 지시: 없음\n사용자 확인 필요: 운영 배포는 사용자 승인이 필요하다'
+  await inspectionTurn($, received.text ?? '', answer)
+
+  expect(world.files.get(LOG)).toContain('[기획] 사용자 확인 필요')
+  expect(world.toasts.join('\n')).toContain('사용자 확인 필요: 운영 배포는 사용자 승인이 필요하다')
 })

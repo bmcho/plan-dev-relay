@@ -11,12 +11,14 @@ import {
   parseRelayArgs,
   parseRoles,
   rolesPath,
+  parseStop,
   parseTag,
   parseVerdict,
   planGuide,
   REPORT_LIMIT,
   reviewGuide,
   reviewHeader,
+  reviewStatus,
   tagLine,
   timeStamp,
   unwrap,
@@ -170,10 +172,10 @@ test('parseRelayArgs reads status, manual, auto and an auto limit of 1 to 10', (
 })
 
 test('reviewHeader asks for an inspection report and lets the plan re-instruct only with a round', () => {
-  const retry = reviewHeader({ round: 2, max: 3 })
+  const retry = reviewHeader({ mode: 'auto', round: 2, max: 3 })
   const inspectOnly = reviewHeader(null)
 
-  expect(retry.startsWith('[plan-dev-relay 검수 요청 2/3]')).toBe(true)
+  expect(retry.startsWith('[plan-dev-relay 검수 요청 오토 2/3]')).toBe(true)
   expect(retry).toContain('완료 조건')
   expect(retry).toContain('git diff')
   expect(retry).toContain('[검수 보고]')
@@ -189,7 +191,8 @@ test('reviewHeader asks for an inspection report and lets the plan re-instruct o
 test('automatic re-instruction carries only the fixes from this inspection', () => {
   const scope = '다시 지시에는 이번 검수에서 나온 고칠 점만 담는다. 새 작업이나 다음 단계는 지시하지 않는다.'
 
-  expect(reviewHeader({ round: 1, max: 3 })).toContain(scope)
+  expect(reviewHeader({ mode: 'auto', round: 1, max: 3 })).toContain(scope)
+  expect(reviewHeader({ mode: 'full', round: 1, max: 20 })).not.toContain(scope)
   expect(reviewGuide({ mode: 'auto', max: 3, rounds: 0 })).toContain(scope)
   expect(reviewHeader(null)).not.toContain(scope)
 })
@@ -227,4 +230,44 @@ test('buildReport cuts a long original instruction and points to the log', () =>
   )
   expect(report).not.toContain('b'.repeat(REPORT_LIMIT + 1))
   expect(report).toContain('전체 내용: /log.md')
+})
+
+test('parseRelayArgs reads full auto with a limit of 1 to 50', () => {
+  expect(parseRelayArgs('full')).toEqual({ mode: 'full', max: 20 })
+  expect(parseRelayArgs('full 50')).toEqual({ mode: 'full', max: 50 })
+  expect(parseRelayArgs('full 0')).toBeNull()
+  expect(parseRelayArgs('full 51')).toBeNull()
+  expect(parseRelayArgs('full 3 x')).toBeNull()
+})
+
+test('the full-auto header lets the plan decide and move on, but stop before risky work', () => {
+  const header = reviewHeader({ mode: 'full', round: 3, max: 20 })
+
+  expect(header.startsWith('[plan-dev-relay 검수 요청 풀오토 3/20]')).toBe(true)
+  expect(header).toContain('통과면 계획 문서에서 다음 작업을 정해 SendMessage로 지시')
+  expect(header).toContain('사용자에게 묻지 않는다')
+  expect(header).toContain('git push')
+  expect(header).toContain('결정:')
+  expect(header).toContain('사용자 확인 필요:')
+  // 형식 안내 줄은 판정이나 멈춤으로 읽히지 않는다
+  expect(parseVerdict(header)).toBeNull()
+  expect(parseStop(header)).toBeNull()
+})
+
+test('parseStop reads why full auto stopped for the user', () => {
+  expect(parseStop('검수 결과: 통과\n사용자 확인 필요: 운영 배포 승인')).toBe('운영 배포 승인')
+  expect(parseStop('**사용자 확인 필요:** git push')).toBe('git push')
+  expect(parseStop('사용자 확인 필요: 없음')).toBeNull()
+  expect(parseStop('- 사용자 확인 필요: 없음 (계획 완료)')).toBeNull()
+  expect(parseStop('검수 결과: 통과')).toBeNull()
+})
+
+test('reviewGuide and reviewStatus describe each mode with the user-facing names', () => {
+  const full = { mode: 'full', max: 20, rounds: 2 } as const
+  expect(reviewStatus({ mode: 'manual', max: 3, rounds: 0 })).toContain('수동')
+  expect(reviewStatus({ mode: 'auto', max: 3, rounds: 1 })).toContain('모드: 오토')
+  expect(reviewStatus(full)).toContain('모드: 풀오토')
+  expect(reviewStatus(full)).toContain('최대 20회, 지금 2회 진행')
+  expect(reviewGuide(full)).toContain('사용자 승인 없이')
+  expect(reviewGuide(full)).toContain('계획과 진행 상태는 그 문서에 적고')
 })
