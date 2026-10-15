@@ -149,6 +149,7 @@ test('dev reports a planned task to the plan session with its tag', async ($, on
   expect(world.sends[0]?.to).toContain('S-PLAN')
   expect(world.sends[0]?.text.startsWith('[plan-dev-relay role=dev session=S-DEV]\n')).toBe(true)
   expect(world.sends[0]?.text).toContain('[개발 보고] TMS 경로 API 추가')
+  expect(world.sends[0]?.text).toContain('검수 기준 (원래 지시):\nTMS 경로 API 추가\n상세')
   expect(world.sends[0]?.text).toContain('- acs/Foo.java')
   expect(world.sends[0]?.text).toContain('- 성공: ./gradlew test')
   const log = world.files.get(LOG) ?? ''
@@ -261,7 +262,7 @@ test('dev logs direct input without reporting it', async ($, on) => {
   expect(log).toContain('고쳤습니다.')
 })
 
-test("plan takes only its dev partner's tagged messages and starts no turn", async ($, on) => {
+test("plan sends its dev partner's report to the model for inspection, even in manual mode", async ($, on) => {
   const world = newWorld()
   world.files.set(ROLES, JSON.stringify({ dev: { sessionId: 'S-DEV', updatedAt: 't' } }))
   engine(on, 'S-PLAN', world)
@@ -273,30 +274,16 @@ test("plan takes only its dev partner's tagged messages and starts no turn", asy
   } as never)
   const fromStranger = await $.session.receive({ origin: { kind: 'peer' }, text: '다른 세션 메시지' } as never)
 
-  expect(fromPartner.consumed).toBeDefined()
+  expect(fromPartner.consumed).toBeUndefined()
+  expect(fromPartner.text?.startsWith('[plan-dev-relay 검수 요청]')).toBe(true)
+  expect(fromPartner.text).toContain('다시 지시하지 않는다')
+  expect(fromPartner.text).toContain('[개발 보고] 경로 API')
+  expect(fromPartner.text).not.toContain('plan-dev-relay role=')
   expect(fromStranger.text).toBe('다른 세션 메시지')
-  expect(world.toasts.join('\n')).toContain('개발 보고 도착: [개발 보고] 경로 API')
-  expect(world.files.get(LOG)).toContain('[기획] 보고 수신 (S-DEV → S-PLAN)')
-})
-
-test("plan hands pending reports to the model with the user's next prompt, once", async ($, on) => {
-  const world = newWorld()
-  world.files.set(ROLES, JSON.stringify({ dev: { sessionId: 'S-DEV', updatedAt: 't' } }))
-  engine(on, 'S-PLAN', world)
-  await $.command.run({ command: 'role', args: 'plan' } as never)
-
-  await $.session.receive({
-    origin: { kind: 'peer', plugin: 'plan-dev-relay' },
-    text: tag('dev', 'S-DEV', '[개발 보고] 경로 API\n완료'),
-  } as never)
-  const first = await $.prompt.submit({ text: '보고 확인해 줘', wait: false, origin: { kind: 'composer' } } as never)
-  const second = await $.prompt.submit({ text: '다음은?', wait: false, origin: { kind: 'composer' } } as never)
-
-  const context = (first.context ?? []).join('\n')
-  expect(first.text).toBe('보고 확인해 줘')
-  expect(context).toContain('[개발 보고] 경로 API\n완료')
-  expect(context).not.toContain('plan-dev-relay role=')
-  expect(second.context ?? []).toHaveLength(0)
+  expect(world.toasts.join('\n')).toContain('개발 보고 도착: [개발 보고] 경로 API (검수 시작)')
+  const log = world.files.get(LOG) ?? ''
+  expect(log).toContain('[기획] 보고 수신 (S-DEV → S-PLAN)')
+  expect(log).toContain('[기획] 검수 요청')
 })
 
 test('plan tags and logs instructions it sends', async ($, on) => {
@@ -477,18 +464,6 @@ test("/role off removes only this session's own entry from roles.json", async ($
   expect(JSON.parse(world.files.get(ROLES) ?? '{}').dev.sessionId).toBe('S-NEW')
 })
 
-test('plan hands reports over with a prompt sent through Remote Control too', async ($, on) => {
-  const world = newWorld()
-  world.files.set(ROLES, JSON.stringify({ dev: { sessionId: 'S-DEV', updatedAt: 't' } }))
-  engine(on, 'S-PLAN', world)
-  await $.command.run({ command: 'role', args: 'plan' } as never)
-
-  await $.session.receive({ origin: { kind: 'peer' }, text: tag('dev', 'S-DEV', '[개발 보고] 경로 API') } as never)
-  const submitted = await $.prompt.submit({ text: '보고 봐 줘', wait: false, origin: { kind: 'bridge' } } as never)
-
-  expect((submitted.context ?? []).join('\n')).toContain('[개발 보고] 경로 API')
-})
-
 test('/role hands the role guide to the model through the command context', async ($, on) => {
   const world = newWorld()
   engine(on, 'S-PLAN', world)
@@ -610,12 +585,12 @@ test('/relay auto 2 switches the plan session to automatic review and /relay sho
 
   expect(switched.text).toContain('자동')
   expect(switched.text).toContain('최대 2회')
-  expect((switched.context ?? []).join('\n')).toContain('자동 검토 모드')
+  expect((switched.context ?? []).join('\n')).toContain('다시 지시: 자동')
   expect(status.text).toContain('자동')
-  expect(world.files.get(LOG)).toContain('[기획] 검토 모드 변경')
+  expect(world.files.get(LOG)).toContain('[기획] 다시 지시 방식 변경')
 })
 
-test('auto review hands each report to the plan model with a header, up to the limit', async ($, on) => {
+test('auto mode lets the plan re-instruct up to the limit, then still asks for an inspection', async ($, on) => {
   const world = newWorld()
   await planWithDev($, on, world)
   await $.command.run({ command: 'relay', args: 'auto 2' } as never)
@@ -625,18 +600,17 @@ test('auto review hands each report to the plan model with a header, up to the l
   const third = await $.session.receive(report('[개발 보고] 3차\n본문3'))
 
   expect(first.consumed).toBeUndefined()
-  expect(first.text?.startsWith('[plan-dev-relay 자동 검토 1/2]')).toBe(true)
+  expect(first.text?.startsWith('[plan-dev-relay 검수 요청 1/2]')).toBe(true)
   expect(first.text).toContain('[개발 보고] 1차\n본문1')
-  expect(second.text?.startsWith('[plan-dev-relay 자동 검토 2/2]')).toBe(true)
-  expect(third.consumed).toBeDefined()
-  expect(world.toasts.join('\n')).toContain('자동 검토 2회 도달')
+  expect(second.text?.startsWith('[plan-dev-relay 검수 요청 2/2]')).toBe(true)
+  expect(third.consumed).toBeUndefined()
+  expect(third.text?.startsWith('[plan-dev-relay 검수 요청]')).toBe(true)
+  expect(third.text).toContain('다시 지시하지 않는다')
+  expect(world.toasts.join('\n')).toContain('자동 다시 지시 한도 2회 도달')
   const log = world.files.get(LOG) ?? ''
-  expect(log).toContain('[기획] 자동 검토 1/2')
-  expect(log).toContain('[기획] 자동 검토 2/2')
-  expect(log).toContain('[기획] 자동 검토 한도 도달')
-
-  const next = await $.prompt.submit(userPrompt('확인해 줘'))
-  expect((next.context ?? []).join('\n')).toContain('[개발 보고] 3차')
+  expect(log).toContain('[기획] 검수 요청 (자동 다시 지시 1/2)')
+  expect(log).toContain('[기획] 검수 요청 (자동 다시 지시 2/2)')
+  expect(log).toContain('[기획] 검수 요청 (자동 다시 지시 한도 2회 도달)')
 })
 
 test('a user prompt resets the automatic review count', async ($, on) => {
@@ -649,10 +623,10 @@ test('a user prompt resets the automatic review count', async ($, on) => {
   const after = await $.session.receive(report('[개발 보고] 2차'))
 
   expect(after.consumed).toBeUndefined()
-  expect(after.text?.startsWith('[plan-dev-relay 자동 검토 1/1]')).toBe(true)
+  expect(after.text?.startsWith('[plan-dev-relay 검수 요청 1/1]')).toBe(true)
 })
 
-test('/relay manual goes back to collecting reports for the next prompt', async ($, on) => {
+test('/relay manual stops automatic re-instruction but keeps the inspection', async ($, on) => {
   const world = newWorld()
   await planWithDev($, on, world)
   await $.command.run({ command: 'relay', args: 'auto' } as never)
@@ -660,8 +634,10 @@ test('/relay manual goes back to collecting reports for the next prompt', async 
 
   const received = await $.session.receive(report('[개발 보고] 수동'))
 
-  expect(received.consumed).toBeDefined()
-  expect(world.toasts.join('\n')).toContain('개발 보고 도착: [개발 보고] 수동')
+  expect(received.consumed).toBeUndefined()
+  expect(received.text?.startsWith('[plan-dev-relay 검수 요청]')).toBe(true)
+  expect(received.text).toContain('다시 지시하지 않는다')
+  expect(world.toasts.join('\n')).toContain('개발 보고 도착: [개발 보고] 수동 (검수 시작)')
 })
 
 test('/relay refuses to switch outside a plan session and rejects bad arguments', async ($, on) => {
@@ -675,4 +651,67 @@ test('/relay refuses to switch outside a plan session and rejects bad arguments'
 
   expect(refused.text).toContain('기획 세션에서만')
   expect(bad.text).toContain('사용법: /relay')
+})
+
+// 검수 보고서: 검수 요청이 들어간 turn의 마지막 답변
+const inspectionTurn = async ($: Engine, request: string, answer: string, reason: 'answer' | 'aborted' = 'answer') => {
+  await $.prompt.submit({ text: request, wait: false, origin: { kind: 'peer' } } as never)
+  await $.turn.start({ text: '', turnId: 'P1' } as never)
+  await $.turn.complete({ answer, durationMs: 1, isAborted: reason === 'aborted', turnId: 'P1', reason } as never)
+}
+
+const ordinaryTurn = async ($: Engine, answer: string) => {
+  await $.turn.start({ text: '', turnId: 'P2' } as never)
+  await $.turn.complete({ answer, durationMs: 1, isAborted: false, turnId: 'P2', reason: 'answer' } as never)
+}
+
+test('plan logs the inspection report once, when the inspection turn ends', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+  const received = await $.session.receive(report('[개발 보고] 경로 API'))
+
+  const answer = '[검수 보고] 경로 API\n검수 결과: 반려 — 테스트 없음\n문제와 고칠 점: 테스트 추가'
+  await inspectionTurn($, received.text ?? '', answer)
+  await $.prompt.submit(userPrompt('고마워'))
+  await ordinaryTurn($, '네.')
+
+  const log = world.files.get(LOG) ?? ''
+  expect(log).toContain('[기획] 검수 보고 (반려)')
+  expect(log).toContain('문제와 고칠 점: 테스트 추가')
+  expect(log.split('[기획] 검수 보고').length - 1).toBe(1)
+  expect(world.toasts.join('\n')).toContain('검수 반려: [검수 보고] 경로 API')
+})
+
+test('plan warns when the inspection turn ends without a verdict', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+  const received = await $.session.receive(report('[개발 보고] 경로 API'))
+
+  await inspectionTurn($, received.text ?? '', '확인했습니다.', 'aborted')
+
+  expect(world.files.get(LOG)).toContain('[기획] 검수 보고 누락 (중단됨)')
+  expect(world.toasts.join('\n')).toContain('검수 보고서 누락')
+})
+
+test('plan does not treat an ordinary turn or a stranger message as an inspection', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+
+  await $.prompt.submit(userPrompt('다음 작업 정리해 줘'))
+  await ordinaryTurn($, '정리했습니다.')
+  await $.prompt.submit({ text: '다른 세션 메시지', wait: false, origin: { kind: 'peer' } } as never)
+  await ordinaryTurn($, '읽었습니다.')
+
+  expect(world.files.get(LOG) ?? '').not.toContain('검수 보고')
+  expect(world.toasts.join('\n')).not.toContain('검수')
+})
+
+test('plan also logs an inspection report the user asked for', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+
+  await $.prompt.submit(userPrompt('방금 작업 다시 검수해 줘'))
+  await ordinaryTurn($, '[검수 보고] 경로 API\n**검수 결과:** 통과')
+
+  expect(world.files.get(LOG)).toContain('[기획] 검수 보고 (통과)')
 })

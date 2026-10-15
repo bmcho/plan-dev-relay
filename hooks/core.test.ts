@@ -12,8 +12,10 @@ import {
   parseRoles,
   rolesPath,
   parseTag,
+  parseVerdict,
   planGuide,
   REPORT_LIMIT,
+  reviewGuide,
   reviewHeader,
   tagLine,
   timeStamp,
@@ -114,6 +116,12 @@ test('planGuide names the dev-session alias and what to do when no dev session i
   expect(planGuide()).toContain('/role dev')
 })
 
+test('planGuide lets the plan session run checks for an inspection but not edit code', () => {
+  expect(planGuide()).toContain('구현과 수정은 직접 하지 말고')
+  expect(planGuide()).toContain('테스트 실행')
+  expect(planGuide()).toContain('완료 조건은 검수할 수 있게 항목별로')
+})
+
 // 엔진이 다른 세션의 메시지를 감싸는 형식 (실제 로그에서 가져옴)
 const WRAPPED =
   '<cross-session-message from="uds:/tmp/cc-socks/4456.sock" from-name="control-center-48" from-mode="prompting">\n' +
@@ -161,9 +169,62 @@ test('parseRelayArgs reads status, manual, auto and an auto limit of 1 to 10', (
   expect(parseRelayArgs('fast')).toBeNull()
 })
 
-test('reviewHeader names the round and tells the model how to finish', () => {
-  const header = reviewHeader(2, 3)
-  expect(header).toContain('자동 검토 2/3')
-  expect(header).toContain('"dev-session"')
-  expect(header).toContain('검토 완료')
+test('reviewHeader asks for an inspection report and lets the plan re-instruct only with a round', () => {
+  const retry = reviewHeader({ round: 2, max: 3 })
+  const inspectOnly = reviewHeader(null)
+
+  expect(retry.startsWith('[plan-dev-relay 검수 요청 2/3]')).toBe(true)
+  expect(retry).toContain('완료 조건')
+  expect(retry).toContain('git diff')
+  expect(retry).toContain('[검수 보고]')
+  expect(retry).toContain('검수 결과:')
+  expect(retry).toContain('SendMessage로 "dev-session"에 다시 지시')
+  expect(inspectOnly.startsWith('[plan-dev-relay 검수 요청]')).toBe(true)
+  expect(inspectOnly).toContain('다시 지시하지 않는다')
+  expect(inspectOnly).not.toContain('SendMessage')
+  // 형식 안내 줄은 판정으로 읽히지 않는다
+  expect(parseVerdict(retry)).toBeNull()
+})
+
+test('automatic re-instruction carries only the fixes from this inspection', () => {
+  const scope = '다시 지시에는 이번 검수에서 나온 고칠 점만 담는다. 새 작업이나 다음 단계는 지시하지 않는다.'
+
+  expect(reviewHeader({ round: 1, max: 3 })).toContain(scope)
+  expect(reviewGuide({ mode: 'auto', max: 3, rounds: 0 })).toContain(scope)
+  expect(reviewHeader(null)).not.toContain(scope)
+})
+
+test('parseVerdict reads the verdict line in common markdown forms', () => {
+  expect(parseVerdict('[검수 보고] 경로 API\n검수 결과: 통과')).toBe('통과')
+  expect(parseVerdict('**검수 결과:** 반려 — 테스트 없음')).toBe('반려')
+  expect(parseVerdict('- **검수 결과**: 반려')).toBe('반려')
+  expect(parseVerdict('## 검수 결과: 통과')).toBe('통과')
+  expect(parseVerdict('검수 결과는 나중에 알려 드립니다. 통과')).toBeNull()
+  expect(parseVerdict('확인했습니다.')).toBeNull()
+})
+
+test('buildReport puts the original instruction under 검수 기준 without the engine wrapper', () => {
+  const report = buildReport(
+    { source: 'plan', title: '경로 API', prompt: WRAPPED },
+    '완료했습니다.',
+    [],
+    [],
+    REPORT_LIMIT,
+    '/log.md',
+  )
+  expect(report).toContain('검수 기준 (원래 지시):\n작업 제목\n본문')
+  expect(report).not.toContain('cross-session-message')
+})
+
+test('buildReport cuts a long original instruction and points to the log', () => {
+  const report = buildReport(
+    { source: 'plan', title: 't', prompt: 'b'.repeat(REPORT_LIMIT + 10) },
+    'done',
+    [],
+    [],
+    REPORT_LIMIT,
+    '/log.md',
+  )
+  expect(report).not.toContain('b'.repeat(REPORT_LIMIT + 1))
+  expect(report).toContain('전체 내용: /log.md')
 })

@@ -24,9 +24,11 @@ import {
   parseRelayArgs,
   parseRoles,
   parseTag,
+  parseVerdict,
   planGuide,
   RELAY_USAGE,
   REPORT_LIMIT,
+  REVIEW_MARK,
   reviewGuide,
   reviewHeader,
   reviewStatus,
@@ -46,7 +48,7 @@ export const frame = atom({ plugin: 'plan-dev-relay', key: 'frame' } as const, 0
 export const task = atom({ plugin: 'plan-dev-relay', key: 'task' } as const, null)
 export const edits = atom({ plugin: 'plan-dev-relay', key: 'edits' } as const, [])
 export const commands = atom({ plugin: 'plan-dev-relay', key: 'commands' } as const, [])
-export const reports = atom({ plugin: 'plan-dev-relay', key: 'reports' } as const, [])
+export const reviewing = atom({ plugin: 'plan-dev-relay', key: 'reviewing' } as const, false)
 export const review = atom({ plugin: 'plan-dev-relay', key: 'review' } as const, {
   mode: 'manual',
   max: DEFAULT_REVIEW_ROUNDS,
@@ -204,6 +206,20 @@ const finishTask = async ($: EngineInterface, answer: string, reason: TurnComple
   }
 }
 
+// 검수 요청이 들어간 turn의 마지막 답변이 검수 보고서다.
+const finishReview = async ($: EngineInterface, answer: string, reason: TurnCompleteReason) => {
+  await update($, reviewing, () => false)
+  const verdict = parseVerdict(answer)
+  if (verdict === null) {
+    const ending = ENDING[reason]
+    await $.ui.toast('검수 보고서 누락: 마지막 답변에 "검수 결과:" 줄이 없습니다')
+    await log($, `[기획] 검수 보고 누락${ending === undefined ? '' : ` ${ending}`}`, answer || '(답변 없음)')
+    return
+  }
+  await $.ui.toast(`검수 ${verdict}: ${firstLine(answer)}`)
+  await log($, `[기획] 검수 보고 (${verdict})`, answer)
+}
+
 const USAGE = '사용법: /role plan | dev | off'
 
 export const register: Register = (on, options) => {
@@ -214,7 +230,7 @@ export const register: Register = (on, options) => {
     await $.command.register({ name: 'role', description: `plan-dev-relay 역할 지정. ${USAGE}` })
     await $.command.register({
       name: 'relay',
-      description: `plan-dev-relay 보고 검토 방식 (수동/자동). ${RELAY_USAGE}`,
+      description: `plan-dev-relay 검수에서 반려됐을 때 다시 지시하는 방식 (수동/자동). ${RELAY_USAGE}`,
     })
     return next(e)
   })
@@ -275,7 +291,7 @@ export const register: Register = (on, options) => {
         ? { mode: 'auto', max: parsed.max, rounds: 0 }
         : { mode: 'manual', max: current.max, rounds: 0 }
     await update($, review, () => next)
-    await log($, '[기획] 검토 모드 변경', reviewStatus(next))
+    await log($, '[기획] 다시 지시 방식 변경', reviewStatus(next))
     return { text: reviewStatus(next), context: [reviewGuide(next)] }
   })
 
@@ -291,24 +307,20 @@ export const register: Register = (on, options) => {
       const current = await read($, review)
       await log($, `[기획] 보고 수신 ${route}`, unwrap(body))
 
-      if (current.mode === 'auto' && current.rounds < current.max) {
-        // 자동 검토: 머리말을 붙여 넘기면 엔진이 기획 세션의 turn을 시작한다.
-        const round = current.rounds + 1
-        await update($, review, r => ({ ...r, rounds: r.rounds + 1 }))
-        await $.ui.toast(`개발 보고 도착: ${firstLine(body)} (자동 검토 ${round}/${current.max})`)
-        await log($, `[기획] 자동 검토 ${round}/${current.max}`, firstLine(body))
-        return next({ ...e, text: `${reviewHeader(round, current.max)}\n${body}` })
-      }
-
-      // 수동이거나 자동 검토 한도에 닿았으면 다음 사용자 프롬프트의 context로 넘긴다.
-      await update($, reports, list => [...list, body])
-      if (current.mode === 'auto') {
-        await $.ui.toast(`자동 검토 ${current.max}회 도달, 확인이 필요합니다: ${firstLine(body)}`)
-        await log($, '[기획] 자동 검토 한도 도달', `${current.max}회. 다음 사용자 프롬프트와 함께 전달한다.`)
-      } else {
-        await $.ui.toast(`개발 보고 도착: ${firstLine(body)}`)
-      }
-      return { consumed: 'plan-dev-relay: 기획 세션은 짝의 보고를 기록만 한다' }
+      // 검수는 모드와 관계없이 한다. 머리말을 붙여 넘기면 엔진이 기획 모델에 전달한다.
+      // 자동 모드는 한도 안에서만 반려 때 스스로 다시 지시한다.
+      const isAuto = current.mode === 'auto'
+      const retry = isAuto && current.rounds < current.max ? { round: current.rounds + 1, max: current.max } : null
+      if (retry !== null) await update($, review, r => ({ ...r, rounds: r.rounds + 1 }))
+      const note =
+        retry !== null
+          ? `자동 다시 지시 ${retry.round}/${retry.max}`
+          : isAuto
+            ? `자동 다시 지시 한도 ${current.max}회 도달`
+            : '수동'
+      await $.ui.toast(`개발 보고 도착: ${firstLine(body)} (검수 시작${isAuto ? `, ${note}` : ''})`)
+      await log($, `[기획] 검수 요청 (${note})`, firstLine(body))
+      return next({ ...e, text: `${reviewHeader(retry)}\n${body}` })
     }
 
     await startTask($, { source: 'plan', title: firstLine(body), prompt: body })
@@ -321,12 +333,7 @@ export const register: Register = (on, options) => {
     const mine = await read($, role)
     if (mine === null) return composed
     const current = await read($, review)
-    const text =
-      mine === 'dev'
-        ? devGuide()
-        : current.mode === 'auto'
-          ? `${planGuide()}\n\n${reviewGuide(current)}`
-          : planGuide()
+    const text = mine === 'dev' ? devGuide() : `${planGuide()}\n\n${reviewGuide(current)}`
     return {
       sections: [...composed.sections, { id: `${P}:guide`, text, scope: 'session' as const }],
     }
@@ -361,6 +368,15 @@ export const register: Register = (on, options) => {
 
   on('prompt.submit', async ($, e, next) => {
     const mine = await read($, role)
+    const isPeer = e.origin.kind === 'peer' || e.origin.kind === 'peer-send-message'
+    if (mine === 'plan' && isPeer && e.text.includes(REVIEW_MARK)) {
+      // 검수 요청이 들어간 turn이다. peer 메시지는 실행 중인 turn에 들어가거나 새 turn을 연다.
+      // 어느 쪽이든 다음 turn.complete의 마지막 답변이 검수 보고서다.
+      const submitted = await next(e)
+      if (submitted.drop === undefined) await update($, reviewing, () => true)
+      return submitted
+    }
+
     // 터미널 입력(composer)과 Remote Control 입력(bridge) 모두 사용자 본인의 프롬프트다.
     const isUser = e.origin.kind === 'composer' || e.origin.kind === 'bridge'
     if (mine === null || !isUser) return next(e)
@@ -371,17 +387,9 @@ export const register: Register = (on, options) => {
       return next(e)
     }
 
-    // 사용자가 직접 입력하면 자동 검토 횟수를 처음부터 다시 센다.
+    // 사용자가 직접 입력하면 자동으로 다시 지시한 횟수를 처음부터 다시 센다.
     await update($, review, r => (r.rounds === 0 ? r : { ...r, rounds: 0 }))
-    const pending = await read($, reports)
-    if (pending.length === 0) return next(e)
-    const context = pending.map(report => `[plan-dev-relay] 개발 세션 보고:\n${report}`)
-    const submitted = await next({ ...e, context: [...(e.context ?? []), ...context] })
-    // 프롬프트가 거부되면 보고를 다음 프롬프트까지 남긴다.
-    if (submitted.drop === undefined) {
-      await update($, reports, list => list.slice(pending.length))
-    }
-    return submitted
+    return next(e)
   })
 
   on('tool.call', async ($, e, next) => {
@@ -417,7 +425,12 @@ export const register: Register = (on, options) => {
     if (e.agentId !== undefined) return result
     timer?.cancel()
     timer = undefined
-    if ((await read($, role)) === 'dev') await finishTask($, e.answer, e.reason)
+    const mine = await read($, role)
+    if (mine === 'dev') await finishTask($, e.answer, e.reason)
+    // 사용자가 직접 검수를 시킨 turn도 판정 줄이 있으면 검수 보고서로 남긴다.
+    if (mine === 'plan' && ((await read($, reviewing)) || parseVerdict(e.answer) !== null)) {
+      await finishReview($, e.answer, e.reason)
+    }
     return result
   })
 
