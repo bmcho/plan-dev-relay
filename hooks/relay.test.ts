@@ -1098,3 +1098,79 @@ test('plan always shares the Todos its own agent keeps', async ($, on) => {
     { text: '계획 작성', status: 'in_progress' },
   ])
 })
+
+test('plan shares its relay rows as the instruction is sent, reported and judged', async ($, on) => {
+  const world = newWorld()
+  const clock = await planWithDev($, on, world)
+
+  await $.session.send({ to: 'dev-session', text: '경로 API 추가\n상세', origin: { kind: 'model' } })
+  await clock.advance(2000)
+  expect(shared(world, TODO_PLAN).relay).toEqual([{ title: '경로 API 추가', status: 'working' }])
+
+  const received = await $.session.receive(report('[개발 보고] 경로 API 추가'))
+  await clock.advance(2000)
+  expect(shared(world, TODO_PLAN).relay).toEqual([{ title: '경로 API 추가', status: 'reviewing' }])
+
+  await inspectionTurn($, received.text ?? '', '[검수 보고] 경로 API 추가\n검수 결과: 통과')
+  await clock.advance(2000)
+  expect(shared(world, TODO_PLAN)).toEqual({
+    sessionId: 'S-PLAN',
+    todos: [],
+    relay: [{ title: '경로 API 추가', status: 'passed' }],
+    todoFor: null,
+  })
+})
+
+test('plan keeps a row in review without a verdict and adds no row for a refused instruction', async ($, on) => {
+  const world = newWorld()
+  const clock = await planWithDev($, on, world)
+  await $.session.send({ to: 'dev-session', text: '1차', origin: { kind: 'model' } })
+  const received = await $.session.receive(report('[개발 보고] 1차'))
+  await inspectionTurn($, received.text ?? '', '확인했습니다.')
+
+  world.refuse = '수신 세션 종료'
+  await $.session.send({ to: 'dev-session', text: '2차', origin: { kind: 'model' } })
+  await clock.advance(2000)
+
+  expect(shared(world, TODO_PLAN).relay).toEqual([{ title: '1차', status: 'reviewing' }])
+})
+
+test('plan treats a message to the dev name or address it learned from a report as an instruction', async ($, on) => {
+  const world = newWorld()
+  const clock = await planWithDev($, on, world)
+  // report()의 봉투: from="uds:/tmp/cc-socks/1.sock" from-name="control-center-1"
+  await $.session.receive(report('[개발 보고] 1차'))
+
+  const byName = await $.session.send({ to: 'control-center-1', text: '2차 작업', origin: { kind: 'model' } })
+  const byAddress = await $.session.send({
+    to: 'uds:/tmp/cc-socks/1.sock',
+    text: '추가 지시',
+    origin: { kind: 'model' },
+  })
+
+  expect(byName.isDelivered).toBe(true)
+  expect(byAddress.isDelivered).toBe(true)
+  expect(world.sends).toHaveLength(2)
+  expect(world.sends.every(send => send.to.includes('S-DEV'))).toBe(true)
+  expect((world.files.get(LOG) ?? '').split('[기획→개발] 지시 (S-PLAN → S-DEV)')).toHaveLength(3)
+  await clock.advance(2000)
+  expect(shared(world, TODO_PLAN).relay).toEqual([
+    { title: '2차 작업', status: 'working' },
+    { title: '추가 지시', status: 'working' },
+  ])
+})
+
+test('plan does not use dev names learned from an earlier dev session', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+  await $.session.receive(report('[개발 보고] 1차'))
+  // 개발 세션이 바뀌었다.
+  const roles = JSON.parse(world.files.get(ROLES) ?? '{}')
+  roles.dev = { sessionId: 'S-DEV2', updatedAt: 't' }
+  world.files.set(ROLES, JSON.stringify(roles))
+
+  await $.session.send({ to: 'control-center-1', text: '2차 작업', origin: { kind: 'model' } })
+
+  expect(world.sends[0]?.to).toBe('control-center-1')
+  expect(world.files.get(LOG) ?? '').not.toContain('[기획→개발] 지시')
+})

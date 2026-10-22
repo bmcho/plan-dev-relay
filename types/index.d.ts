@@ -36,6 +36,8 @@ declare module 'claude-code' {
       todoFor: string | null
       // 2초마다 읽은 짝의 공유 파일
       partner: TodoShare | null
+      // 기획: 짝 개발 세션의 봉투에서 배운 주소(from)와 이름(from-name)
+      devNames: DevNames | null
     }
   }
 }

@@ -19,6 +19,7 @@ import {
   DEV_ALIAS,
   devGuide,
   entry,
+  envelopeNames,
   expandHome,
   firstLine,
   logPath,
@@ -43,7 +44,15 @@ import {
   type Roles,
   type Sender,
 } from './core'
-import { applyTaskCreate, applyTaskUpdate, applyTodoWrite, parseShare } from './todo'
+import {
+  applyTaskCreate,
+  applyTaskUpdate,
+  applyTodoWrite,
+  parseShare,
+  relayOnReport,
+  relayOnSend,
+  relayOnVerdict,
+} from './todo'
 
 const P = 'plan-dev-relay'
 export const role = atom({ plugin: 'plan-dev-relay', key: 'role' } as const, null)
@@ -67,6 +76,8 @@ export const relay = atom({ plugin: 'plan-dev-relay', key: 'relay' } as const, [
 export const todoFor = atom({ plugin: 'plan-dev-relay', key: 'todoFor' } as const, null)
 // 2초마다 읽은 짝의 공유 파일
 export const partner = atom({ plugin: 'plan-dev-relay', key: 'partner' } as const, null)
+// 기획: 짝 개발 세션의 봉투에서 배운 주소와 이름
+export const devNames = atom({ plugin: 'plan-dev-relay', key: 'devNames' } as const, null)
 export const agents = atom({ plugin: 'plan-dev-relay', key: 'agents' } as const, [])
 
 // 엔진은 $를 받는 함수를 hook 모듈 파일 안에서만 따라간다. 그래서 입출력 함수는 이 파일에 둔다.
@@ -309,6 +320,7 @@ const finishReview = async ($: EngineInterface, answer: string, reason: TurnComp
     await $.ui.toast('검수 보고서 누락: 마지막 답변에 "검수 결과:" 줄이 없습니다')
     await log($, `[기획] 검수 보고 누락${ending === undefined ? '' : ` ${ending}`}`, answer || '(답변 없음)')
   } else {
+    await update($, relay, rows => relayOnVerdict(rows, verdict))
     await $.ui.toast(`검수 ${verdict}: ${firstLine(answer)}`)
     await log($, `[기획] 검수 보고 (${verdict})`, answer)
   }
@@ -462,6 +474,13 @@ export const register: Register = (on, options) => {
     const route = `(${sender.sessionId} → ${await $.session.id()})`
 
     if (mine === 'plan') {
+      // 기획 모델이 이 보고의 봉투에 적힌 이름이나 주소로 답장해도 지시로 알아보게 배워 둔다.
+      const names = envelopeNames(e.text)
+      await update($, devNames, known => {
+        const kept = known !== null && known.sessionId === sender.sessionId ? known.names : []
+        return { sessionId: sender.sessionId, names: [...new Set([...kept, ...names])] }
+      })
+      await update($, relay, relayOnReport)
       const current = await read($, review)
       await log($, `[기획] 보고 수신 ${route}`, unwrap(body))
 
@@ -509,7 +528,10 @@ export const register: Register = (on, options) => {
     if (mine !== 'plan' || e.origin.kind !== 'model') return next({ ...e, text })
 
     const devId = (await readRoles($, await read($, dir))).dev?.sessionId
-    if (e.to !== DEV_ALIAS && e.to !== devId) return next({ ...e, text })
+    // 기획 모델은 보고 봉투의 이름이나 주소로 답장하기도 한다. 지금 짝에게서 배운 값이면 지시로 본다.
+    const learned = await read($, devNames)
+    const isLearned = learned !== null && learned.sessionId === devId && learned.names.includes(e.to)
+    if (e.to !== DEV_ALIAS && e.to !== devId && !isLearned) return next({ ...e, text })
 
     if (devId === undefined) {
       const reason = '등록된 개발 세션 없음. 사용자에게 다른 세션에서 /role dev 입력을 요청한다.'
@@ -521,7 +543,9 @@ export const register: Register = (on, options) => {
     // SendMessage는 세션 id를 주소로 받지 않으므로 짝인 개발 세션에는 mod가 직접 보낸다.
     await log($, `[기획→개발] 지시 (${myId} → ${devId})`, parseTag(e.text).body)
     const sent = await sendSafely($, devId, text)
-    if (!sent.isDelivered) {
+    if (sent.isDelivered) {
+      await update($, relay, rows => relayOnSend(rows, firstLine(parseTag(e.text).body)))
+    } else {
       await $.ui.toast(`개발 세션 전달 실패: ${sent.reason}`)
       await log($, '[기획] 전달 실패', sent.reason)
     }
