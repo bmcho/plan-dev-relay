@@ -1,4 +1,4 @@
-import type { AgentTodo } from '../types'
+import type { AgentTodo, RelayItem, TodoShare } from '../types'
 
 // 도구 결과는 엔진이 넘긴 값이라 모양을 확인하고 쓴다. 모양이 다르면 목록을 그대로 둔다.
 export const applyTaskCreate = (todos: AgentTodo[], result: unknown): AgentTodo[] => {
@@ -36,4 +36,44 @@ export const applyTodoWrite = (todos: AgentTodo[], next: readonly TodoWriteItem[
   const texts = new Set(next.map(item => item.content))
   const kept = todos.filter(todo => todo.status === 'completed' && !texts.has(todo.text))
   return [...kept, ...next.map(item => ({ text: item.content, status: item.status }))]
+}
+
+// 기획: 일하는 중인 지시가 있으면 덧붙이고, 없으면 목록을 새로 시작한다. 이전 지시는 목록에서 빠진다.
+export const relayOnSend = (rows: RelayItem[], title: string): RelayItem[] => {
+  const row: RelayItem = { title, status: 'working' }
+  return rows.some(item => item.status === 'working') ? [...rows, row] : [row]
+}
+
+export const relayOnReport = (rows: RelayItem[]): RelayItem[] =>
+  rows.map((row): RelayItem => (row.status === 'working' ? { ...row, status: 'reviewing' } : row))
+
+export const relayOnVerdict = (rows: RelayItem[], verdict: '통과' | '반려'): RelayItem[] => {
+  const status = verdict === '통과' ? 'passed' : 'rejected'
+  return rows.map((row): RelayItem => (row.status === 'reviewing' ? { ...row, status } : row))
+}
+
+const TODO_STATUS = new Set(['pending', 'in_progress', 'completed'])
+const RELAY_STATUS = new Set(['working', 'reviewing', 'passed', 'rejected'])
+
+const isTodo = (item: unknown) =>
+  typeof (item as AgentTodo | null)?.text === 'string' && TODO_STATUS.has((item as AgentTodo).status)
+
+const isRow = (item: unknown) =>
+  typeof (item as RelayItem | null)?.title === 'string' && RELAY_STATUS.has((item as RelayItem).status)
+
+// 상대 세션이 쓴 파일이라 모양을 확인한다. 깨졌거나 모양이 다르면 null.
+export const parseShare = (text: string): TodoShare | null => {
+  try {
+    const share = JSON.parse(text) as Partial<TodoShare> | null
+    return typeof share?.sessionId === 'string' &&
+      Array.isArray(share.todos) &&
+      share.todos.every(isTodo) &&
+      Array.isArray(share.relay) &&
+      share.relay.every(isRow) &&
+      (share.todoFor === null || typeof share.todoFor === 'string')
+      ? (share as TodoShare)
+      : null
+  } catch {
+    return null
+  }
 }

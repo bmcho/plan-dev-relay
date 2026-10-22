@@ -1,7 +1,15 @@
 import { expect, test } from 'claude-code/testing'
 
-import type { AgentTodo } from '../types'
-import { applyTaskCreate, applyTaskUpdate, applyTodoWrite } from './todo'
+import type { AgentTodo, RelayItem } from '../types'
+import {
+  applyTaskCreate,
+  applyTaskUpdate,
+  applyTodoWrite,
+  parseShare,
+  relayOnReport,
+  relayOnSend,
+  relayOnVerdict,
+} from './todo'
 
 const todo = (id: string, text: string, status: AgentTodo['status'] = 'pending'): AgentTodo => ({
   id,
@@ -61,4 +69,44 @@ test('applyTodoWrite keeps finished items the new list dropped and drops unfinis
   expect(applyTodoWrite(list, [{ content: '설계', status: 'completed' }])).toEqual([
     { text: '설계', status: 'completed' },
   ])
+})
+
+test('relay rows start over unless an instruction is still being worked on', () => {
+  const first = relayOnSend([], '1차')
+  expect(first).toEqual([{ title: '1차', status: 'working' }])
+  expect(relayOnSend(first, '추가')).toEqual([
+    { title: '1차', status: 'working' },
+    { title: '추가', status: 'working' },
+  ])
+  const reviewing = relayOnReport(first)
+  expect(reviewing).toEqual([{ title: '1차', status: 'reviewing' }])
+  // 검수 중에 보낸 다음 지시는 목록을 새로 시작한다.
+  expect(relayOnSend(reviewing, '2차')).toEqual([{ title: '2차', status: 'working' }])
+})
+
+test('relay rows in review become passed or rejected on a verdict', () => {
+  const rows: RelayItem[] = [
+    { title: '1차', status: 'reviewing' },
+    { title: '추가', status: 'reviewing' },
+  ]
+  expect(relayOnVerdict(rows, '통과').map(row => row.status)).toEqual(['passed', 'passed'])
+  expect(relayOnVerdict(rows, '반려').map(row => row.status)).toEqual(['rejected', 'rejected'])
+  const working: RelayItem[] = [{ title: '2차', status: 'working' }]
+  expect(relayOnVerdict(working, '통과')).toEqual(working)
+})
+
+test('parseShare reads a share and rejects broken or odd ones', () => {
+  const share = {
+    sessionId: 'S-DEV',
+    todos: [{ id: '1', text: '설계', status: 'completed' }],
+    relay: [{ title: '1차', status: 'working' }],
+    todoFor: '1차',
+  }
+  expect(parseShare(JSON.stringify(share))).toEqual(share)
+  expect(parseShare('{broken')).toBeNull()
+  expect(parseShare('null')).toBeNull()
+  expect(parseShare(JSON.stringify({ ...share, sessionId: 1 }))).toBeNull()
+  expect(parseShare(JSON.stringify({ ...share, todos: [{ text: '설계', status: 'done' }] }))).toBeNull()
+  expect(parseShare(JSON.stringify({ ...share, relay: [{ title: 1, status: 'working' }] }))).toBeNull()
+  expect(parseShare(JSON.stringify({ ...share, todoFor: 3 }))).toBeNull()
 })
