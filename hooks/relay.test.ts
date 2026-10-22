@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { Engine } from 'claude-code/testing'
-import type { On } from 'claude-code'
+import type { AgentInfo, On } from 'claude-code'
 
 const ROOT = '/Users/bmcho/Documents/claude/plan-dev-log/control-center'
 const ROLES = `${ROOT}/roles.json`
@@ -16,12 +16,14 @@ type World = {
   // 전송 실패를 흉내 낸다: refuse는 isDelivered false, sendThrows는 예외.
   refuse?: string
   sendThrows?: boolean
+  // $.agent.list()의 답. 백그라운드 에이전트를 흉내 낸다.
+  agents?: AgentInfo[]
 }
 
 // 엔진 바닥을 흉내 낸다. 테스트의 on() hook은 plugin 아래에 놓인다.
 // $ 호출 이벤트(session.id, fs.*, process.run, ui.toast ...)의 답은 { value }로 감싼다.
 const engine = (on: On, sessionId: string, world: World) => {
-  mock.clock(on, { now: NOW })
+  const clock = mock.clock(on, { now: NOW })
   mock.env(on, { HOME: '/Users/bmcho' })
   on('session.id', () => ({ value: sessionId }))
   on('session.repo', () => ({
@@ -61,6 +63,9 @@ const engine = (on: On, sessionId: string, world: World) => {
   on('turn.complete', () => ({ text: '' }))
   on('tool.call', () => ({ result: {}, isError: false, text: 'ok' }) as never)
   on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'base', scope: 'shared' }] }))
+  on('agent.list', () => ({ value: world.agents ?? [] }))
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  return clock
 }
 
 const newWorld = (): World => ({ files: new Map(), sends: [], toasts: [], uiLogs: [] })
@@ -566,8 +571,9 @@ test('/role writes roles.json and the log under the logRoot option', { options: 
 // 진행 모드 (/relay)
 const planWithDev = async ($: Engine, on: On, world: World) => {
   world.files.set(ROLES, JSON.stringify({ dev: { sessionId: 'S-DEV', updatedAt: 't' } }))
-  engine(on, 'S-PLAN', world)
+  const clock = engine(on, 'S-PLAN', world)
   await $.command.run({ command: 'role', args: 'plan' } as never)
+  return clock
 }
 
 const report = (text: string) =>
@@ -761,4 +767,130 @@ test('plan flags an inspection that stopped for the user', async ($, on) => {
 
   expect(world.files.get(LOG)).toContain('[기획] 사용자 확인 필요')
   expect(world.toasts.join('\n')).toContain('사용자 확인 필요: 운영 배포는 사용자 승인이 필요하다')
+})
+
+const agent = (id: string, status: AgentInfo['status'], more: Partial<AgentInfo> = {}): AgentInfo => ({
+  id,
+  status,
+  description: '조사',
+  type: 'general-purpose',
+  ...more,
+})
+
+// 에이전트 loop의 turn. 엔진은 agentId를 붙여 알린다.
+const agentStart = ($: Engine, agentId: string) =>
+  $.turn.start({ text: '', turnId: `A-${agentId}`, agentId } as never)
+
+const agentEnd = ($: Engine, agentId: string) =>
+  $.turn.complete({ answer: '', durationMs: 1, isAborted: false, turnId: `A-${agentId}`, agentId, reason: 'answer' } as never)
+
+test('band stays busy and keeps moving while a background agent works after the main turn ended', async ($, on) => {
+  const world = newWorld()
+  const clock = await planWithDev($, on, world)
+
+  // 메인 turn이 에이전트를 백그라운드로 띄우고 먼저 끝난다.
+  await $.turn.start({ text: '', turnId: 'M1' } as never)
+  world.agents = [agent('A1', 'running')]
+  await agentStart($, 'A1')
+  await $.turn.complete({ answer: '맡겼습니다.', durationMs: 1, isAborted: false, turnId: 'M1', reason: 'answer' } as never)
+
+  // 메인은 쉬지만(isWorking false) 에이전트가 일하므로 '중'이고 캐릭터도 움직인다.
+  await clock.advance(400)
+  const working = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await working.find({ type: 'Text', text: /기획 중/ })).toBeDefined()
+  expect(await working.find({ type: 'Text', text: /oO\( … \)/ })).toBeDefined()
+  await working.unmount()
+
+  // 막 끝난 에이전트는 목록의 상태가 늦게 바뀌어도 끝난 것으로 본다.
+  await agentEnd($, 'A1')
+  const idle = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await idle.find({ type: 'Text', text: /기획 대기/ })).toBeDefined()
+  await idle.unmount()
+})
+
+test('dev holds the report while a background agent works and sends it when the main loop ends after it', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+  await $.session.receive({ origin: { kind: 'peer' }, text: tag('plan', 'S-PLAN', '경로 API 추가') } as never)
+
+  // 에이전트가 아직 시작 전(pending)이어도 메인 turn이 끝날 때 보고하지 않는다.
+  await $.turn.start({ text: '', turnId: 'M1' } as never)
+  world.agents = [agent('A1', 'pending')]
+  await $.turn.complete({ answer: '맡겼습니다.', durationMs: 1, isAborted: false, turnId: 'M1', reason: 'answer' } as never)
+  expect(world.sends).toHaveLength(0)
+
+  // 에이전트가 고친 파일도 보고에 들어간다. 에이전트가 끝나도 메인이 마무리하기 전에는 보고하지 않는다.
+  world.agents = [agent('A1', 'running')]
+  await agentStart($, 'A1')
+  await $.tool.call({ tool: 'Edit', file_path: 'acs/Bar.java', old_string: 'a', new_string: 'b', agentId: 'A1' } as never)
+  world.agents = [agent('A1', 'completed')]
+  await agentEnd($, 'A1')
+  expect(world.sends).toHaveLength(0)
+
+  // 엔진이 알림으로 메인을 깨우고, 그 turn이 끝날 때 보고한다.
+  await devTurn($, '모두 끝났습니다.')
+  expect(world.sends).toHaveLength(1)
+  expect(world.sends[0]?.text).toContain('[개발 보고] 경로 API 추가')
+  expect(world.sends[0]?.text).toContain('모두 끝났습니다.')
+  expect(world.sends[0]?.text).toContain('- acs/Bar.java')
+})
+
+test('dev does not hold the report for loops that will not wake the main loop', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+  await $.session.receive({ origin: { kind: 'peer' }, text: tag('plan', 'S-PLAN', '작업') } as never)
+
+  // 다른 plugin이 띄운 에이전트, 에이전트가 띄운 에이전트, 팀원, 목록에 없는 엔진의 fork
+  world.agents = [
+    agent('P1', 'running', { spawnedBy: 'other-plugin' }),
+    agent('C1', 'running', { parentId: 'A0' }),
+    agent('T1', 'running', { teammateId: 'reviewer@team' }),
+  ]
+  await agentStart($, 'F1')
+  await devTurn($, '끝났습니다.')
+
+  expect(world.sends).toHaveLength(1)
+})
+
+test('plan closes an inspection without a verdict only after its agents finish, but a verdict closes it at once', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+  const first = await $.session.receive(report('[개발 보고] 경로 API'))
+
+  // 검수를 에이전트에 맡기고 판정 없이 turn을 끝내면 아직 마무리하지 않는다.
+  world.agents = [agent('A1', 'running')]
+  await inspectionTurn($, first.text ?? '', '에이전트에 검수를 맡겼습니다.')
+  expect(world.files.get(LOG)).not.toContain('[기획] 검수 보고')
+
+  // 에이전트가 끝나고 메인이 판정을 쓰면 그때 마무리한다.
+  world.agents = [agent('A1', 'completed')]
+  await agentEnd($, 'A1')
+  await ordinaryTurn($, '[검수 보고] 경로 API\n검수 결과: 통과')
+  expect(world.files.get(LOG)).toContain('[기획] 검수 보고 (통과)')
+  expect(world.files.get(LOG)).not.toContain('[기획] 검수 보고 누락')
+
+  // 판정 줄이 있으면 에이전트가 일하는 중이어도 바로 마무리한다.
+  const second = await $.session.receive(report('[개발 보고] 두 번째'))
+  world.agents = [agent('A2', 'running')]
+  await inspectionTurn($, second.text ?? '', '[검수 보고] 두 번째\n검수 결과: 반려 — 테스트 없음')
+  expect(world.files.get(LOG)).toContain('[기획] 검수 보고 (반려)')
+})
+
+test('a reloaded session counts running agents again and keeps the character moving', async ($, on) => {
+  const world = newWorld()
+  const clock = await planWithDev($, on, world)
+
+  // mod를 다시 불러오면 타이머는 사라지고 session.start가 다시 온다.
+  world.agents = [agent('A1', 'running')]
+  await $.session.start({ cwd: '/Users/bmcho/Documents/git/control-center', surface: 'terminal', isInteractive: true } as never)
+  await clock.advance(400)
+
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal' })
+  expect(await band.find({ type: 'Text', text: /기획 중/ })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /oO\( … \)/ })).toBeDefined()
+  await band.unmount()
 })

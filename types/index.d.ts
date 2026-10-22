@@ -18,6 +18,8 @@ declare module 'claude-code' {
       // 검수 요청이 들어간 turn이 끝나기를 기다리는 중
       reviewing: boolean
       review: Review
+      // 메인이 띄운 서브에이전트 중 아직 일하는 것의 id. 이 동안은 세션이 일하는 중으로 본다.
+      agents: string[]
     }
   }
 }

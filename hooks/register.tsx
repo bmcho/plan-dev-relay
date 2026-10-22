@@ -1,5 +1,6 @@
 import { atom, read, update } from 'claude-code'
 import type {
+  AgentInfo,
   EngineInterface,
   Register,
   SessionSendResult,
@@ -56,6 +57,7 @@ export const review = atom({ plugin: 'plan-dev-relay', key: 'review' } as const,
   max: DEFAULT_REVIEW_ROUNDS,
   rounds: 0,
 })
+export const agents = atom({ plugin: 'plan-dev-relay', key: 'agents' } as const, [])
 
 // 엔진은 $를 받는 함수를 hook 모듈 파일 안에서만 따라간다. 그래서 입출력 함수는 이 파일에 둔다.
 const repoName = async ($: EngineInterface) => {
@@ -228,11 +230,43 @@ const finishReview = async ($: EngineInterface, answer: string, reason: TurnComp
   }
 }
 
+// 일하는 동안 캐릭터를 움직인다.
+const frameTimer = ($: EngineInterface) => $.clock.every(200, () => void update($, frame, n => (n + 1) % 600))
+
+const BUSY = new Set(['pending', 'running', 'waiting'])
+
+// 메인 loop가 띄운 서브에이전트 중 아직 일하는 것을 다시 센다. 이것들은 끝나면 엔진이 알림으로 메인을 깨운다.
+// 다른 plugin이 띄운 에이전트, 에이전트가 띄운 에이전트, 팀원, 목록에 없는 엔진의 fork는 메인을 깨운다는 보장이 없어 세지 않는다.
+// ended는 막 turn을 끝낸 에이전트다. 목록의 상태가 늦게 바뀌어도 끝난 것으로 본다.
+const refreshAgents = async ($: EngineInterface, ended?: string) => {
+  let list: AgentInfo[] = []
+  try {
+    list = await $.agent.list()
+  } catch (error) {
+    // 목록을 못 읽으면 기다리지 않는다. 보고가 묶여 나가지 않는 것보다 낫다.
+    $.ui.log(`plan-dev-relay: 에이전트 목록 읽기 실패: ${String(error)}`)
+  }
+  const ids = list
+    .filter(agent => agent.parentId === undefined && agent.spawnedBy === undefined && agent.teammateId === undefined)
+    .filter(agent => BUSY.has(agent.status) && agent.id !== ended)
+    .map(agent => agent.id)
+  await update($, agents, old =>
+    old.length === ids.length && old.every((id, index) => id === ids[index]) ? old : ids,
+  )
+  return ids
+}
+
 const USAGE = '사용법: /role plan | dev | off'
 
 export const register: Register = (on, options) => {
   // hot reload 때 module 변수는 초기화된다. 다음 turn.start에서 다시 켠다.
   let timer: Timer | undefined
+  let isMainTurn = false
+
+  const stopFrames = () => {
+    timer?.cancel()
+    timer = undefined
+  }
 
   on('session.start', async ($, e, next) => {
     await $.command.register({ name: 'role', description: `plan-dev-relay 역할 지정. ${USAGE}` })
@@ -240,6 +274,10 @@ export const register: Register = (on, options) => {
       name: 'relay',
       description: `plan-dev-relay 검수 뒤 진행 방식 (수동/오토/풀오토). ${RELAY_USAGE}`,
     })
+    // 다시 불러오거나 이어 연 세션에 지난 에이전트 목록이 남지 않게 다시 센다.
+    // 다시 불러오면 타이머가 사라지므로, 에이전트가 일하는 중이면 캐릭터를 다시 움직인다.
+    const working = await refreshAgents($)
+    if (working.length > 0 && (await read($, role)) !== null) timer ??= frameTimer($)
     return next(e)
   })
 
@@ -257,8 +295,7 @@ export const register: Register = (on, options) => {
     }
 
     if (arg === 'off') {
-      timer?.cancel()
-      timer = undefined
+      stopFrames()
       const mine = await read($, role)
       if (mine !== null) await clearRole($, await read($, dir), mine, await $.session.id())
       await update($, role, () => null)
@@ -425,22 +462,27 @@ export const register: Register = (on, options) => {
   })
 
   on('turn.start', async ($, e, next) => {
-    if ((await read($, role)) !== null) {
-      timer?.cancel()
-      timer = $.clock.every(200, () => void update($, frame, n => (n + 1) % 600))
-    }
+    if (e.agentId === undefined) isMainTurn = true
+    const working = await refreshAgents($)
+    if ((await read($, role)) !== null && (isMainTurn || working.length > 0)) timer ??= frameTimer($)
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
     const result = await next(e)
+    if (e.agentId === undefined) isMainTurn = false
+    const working = await refreshAgents($, e.agentId)
+    if (!isMainTurn && working.length === 0) stopFrames()
     if (e.agentId !== undefined) return result
-    timer?.cancel()
-    timer = undefined
+    // 메인이 띄운 에이전트가 아직 일하면 그 일이 끝난 뒤에 마무리한다.
+    // 에이전트가 끝나면 엔진이 알림으로 메인을 깨우고, 그 turn이 끝날 때 다시 본다.
+    const waits = working.length > 0
     const mine = await read($, role)
-    if (mine === 'dev') await finishTask($, e.answer, e.reason)
+    if (mine === 'dev' && !waits) await finishTask($, e.answer, e.reason)
     // 사용자가 직접 검수를 시킨 turn도 판정 줄이 있으면 검수 보고서로 남긴다.
-    if (mine === 'plan' && ((await read($, reviewing)) || parseVerdict(e.answer) !== null)) {
+    // 판정 줄이 있으면 에이전트를 기다리지 않는다.
+    const hasVerdict = parseVerdict(e.answer) !== null
+    if (mine === 'plan' && (hasVerdict || ((await read($, reviewing)) && !waits))) {
       await finishReview($, e.answer, e.reason)
     }
     return result
@@ -450,8 +492,9 @@ export const register: Register = (on, options) => {
     const mine = await read($, role)
     if (mine === null || e.props.hasSurvey) return next(e)
 
+    // 메인이 쉬어도 메인이 띄운 에이전트가 일하면 일하는 중이다.
     // 작업 중일 때만 frame을 읽어 구독한다. 쉬는 동안에는 다시 그리지 않는다.
-    const busy = e.props.isWorking
+    const busy = e.props.isWorking || (await read($, agents)).length > 0
     const lines = artFor(mine, busy ? await read($, frame) : 0)
     const current = await read($, task)
     const label = `   ${roleLabel(mine)} ${busy ? '중' : '대기'}   `
