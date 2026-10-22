@@ -8,7 +8,7 @@ import type {
   TurnCompleteReason,
 } from 'claude-code'
 
-import type { CommandRun, Review, Role, Task } from '../types'
+import type { CommandRun, Review, Role, Task, TodoShare } from '../types'
 import { artFor, LABEL_STYLE, ORANGE } from './art'
 import {
   baseName,
@@ -37,11 +37,13 @@ import {
   reviewStatus,
   roleLabel,
   rolesPath,
+  todoPath,
   unwrap,
   withTag,
   type Roles,
   type Sender,
 } from './core'
+import { parseShare } from './todo'
 
 const P = 'plan-dev-relay'
 export const role = atom({ plugin: 'plan-dev-relay', key: 'role' } as const, null)
@@ -57,6 +59,14 @@ export const review = atom({ plugin: 'plan-dev-relay', key: 'review' } as const,
   max: DEFAULT_REVIEW_ROUNDS,
   rounds: 0,
 })
+// 이 세션 에이전트의 To-Do. 완료 항목도 남긴다.
+export const todos = atom({ plugin: 'plan-dev-relay', key: 'todos' } as const, [])
+// 기획: 가장 최근 지시의 행
+export const relay = atom({ plugin: 'plan-dev-relay', key: 'relay' } as const, [])
+// 개발: todos가 속한 지시의 제목
+export const todoFor = atom({ plugin: 'plan-dev-relay', key: 'todoFor' } as const, null)
+// 2초마다 읽은 짝의 공유 파일
+export const partner = atom({ plugin: 'plan-dev-relay', key: 'partner' } as const, null)
 export const agents = atom({ plugin: 'plan-dev-relay', key: 'agents' } as const, [])
 
 // 엔진은 $를 받는 함수를 hook 모듈 파일 안에서만 따라간다. 그래서 입출력 함수는 이 파일에 둔다.
@@ -130,6 +140,81 @@ const partnerOf = async ($: EngineInterface, sender: Sender | null) => {
   if (mine === null || sender === null || sender.role === mine) return false
   const roles = await readRoles($, await read($, dir))
   return roles[sender.role]?.sessionId === sender.sessionId
+}
+
+// 2초 확인의 기억. 확인을 켤 때마다 새로 만든다.
+type SyncMemo = { busy: boolean; written: string; writeFailed: boolean; seen: string }
+
+const myShare = async ($: EngineInterface, mine: Role): Promise<TodoShare> => ({
+  sessionId: await $.session.id(),
+  todos: await read($, todos),
+  relay: mine === 'plan' ? await read($, relay) : [],
+  todoFor: mine === 'dev' ? await read($, todoFor) : null,
+})
+
+// 2초마다 읽으므로 깨진 roles.json을 알리지 않는다. 알림은 /role 때 readRoles가 한다.
+const partnerIdOf = async ($: EngineInterface, logDir: string, other: Role) => {
+  try {
+    return parseRoles(String(await $.fs.read(rolesPath(logDir))))?.[other]?.sessionId
+  } catch {
+    return undefined
+  }
+}
+
+const forget = async ($: EngineInterface, memo: SyncMemo) => {
+  memo.seen = ''
+  if ((await read($, partner)) !== null) await update($, partner, () => null)
+}
+
+// 내 몫은 바뀌었을 때만 쓰고, 상대 몫은 글이나 짝이 바뀌었을 때만 다시 파싱한다.
+// 상태가 바뀔 때마다 바로 쓰지 않아서 병렬 도구 호출의 쓰기 순서가 꼬이지 않는다.
+const sync = async ($: EngineInterface, memo: SyncMemo) => {
+  const mine = await read($, role)
+  const logDir = await read($, dir)
+  if (mine === null || logDir === '') return
+
+  const text = `${JSON.stringify(await myShare($, mine))}\n`
+  if (text !== memo.written) {
+    try {
+      await $.fs.write(todoPath(logDir, mine), text)
+      memo.written = text
+      memo.writeFailed = false
+    } catch (error) {
+      if (!memo.writeFailed) $.ui.log(`plan-dev-relay: To-Do 공유 파일 쓰기 실패: ${String(error)}`)
+      memo.writeFailed = true
+    }
+  }
+
+  const other: Role = mine === 'plan' ? 'dev' : 'plan'
+  const partnerId = await partnerIdOf($, logDir, other)
+  if (partnerId === undefined) return forget($, memo)
+  let found: string
+  try {
+    found = String(await $.fs.read(todoPath(logDir, other)))
+  } catch {
+    return forget($, memo)
+  }
+  const key = `${partnerId}\n${found}`
+  if (key === memo.seen) return
+  memo.seen = key
+  const share = parseShare(found)
+  // 깨진 글은 무시하고 직전 값을 유지한다. 다른 세션이 남긴 옛 파일이면 짝이 없는 것으로 본다.
+  if (share !== null) await update($, partner, () => (share.sessionId === partnerId ? share : null))
+}
+
+// 새 기억으로 2초 타이머를 켠다. 앞 차례가 아직 끝나지 않았으면 이번 차례는 건너뛴다.
+// $를 받으므로 register 안이 아니라 파일 최상위에 둔다.
+const syncTimer = ($: EngineInterface) => {
+  const memo: SyncMemo = { busy: false, written: '', writeFailed: false, seen: '' }
+  return $.clock.every(2000, () => {
+    if (memo.busy) return
+    memo.busy = true
+    void sync($, memo)
+      .catch(error => $.ui.log(`plan-dev-relay: To-Do 공유 실패: ${String(error)}`))
+      .finally(() => {
+        memo.busy = false
+      })
+  })
 }
 
 const startTask = async ($: EngineInterface, next: Task) => {
@@ -262,6 +347,8 @@ export const register: Register = (on, options) => {
   // hot reload 때 module 변수는 초기화된다. 다음 turn.start에서 다시 켠다.
   let timer: Timer | undefined
   let isMainTurn = false
+  // 2초마다 내 To-Do 몫을 쓰고 상대 몫을 읽는다. hot reload 뒤에는 session.start에서 다시 켠다.
+  let poll: Timer | undefined
 
   const stopFrames = () => {
     timer?.cancel()
@@ -278,6 +365,11 @@ export const register: Register = (on, options) => {
     // 다시 불러오면 타이머가 사라지므로, 에이전트가 일하는 중이면 캐릭터를 다시 움직인다.
     const working = await refreshAgents($)
     if (working.length > 0 && (await read($, role)) !== null) timer ??= frameTimer($)
+    // hot reload 뒤에도 역할은 남아 있다. 2초 확인을 다시 켠다.
+    if ((await read($, role)) !== null) {
+      poll?.cancel()
+      poll = syncTimer($)
+    }
     return next(e)
   })
 
@@ -288,16 +380,30 @@ export const register: Register = (on, options) => {
       const mine = await read($, role)
       if (mine === null) return { text: `역할 없음. ${USAGE}` }
       const roles = await readRoles($, await read($, dir))
-      const partner = mine === 'plan' ? roles.dev : roles.plan
+      const paired = mine === 'plan' ? roles.dev : roles.plan
       return {
-        text: `${roleLabel(mine)} 역할. 상대 세션: ${partner?.sessionId ?? '없음'}`,
+        text: `${roleLabel(mine)} 역할. 상대 세션: ${paired?.sessionId ?? '없음'}`,
       }
     }
 
     if (arg === 'off') {
       stopFrames()
+      poll?.cancel()
+      poll = undefined
       const mine = await read($, role)
-      if (mine !== null) await clearRole($, await read($, dir), mine, await $.session.id())
+      if (mine !== null) {
+        const logDir = await read($, dir)
+        const sessionId = await $.session.id()
+        await clearRole($, logDir, mine, sessionId)
+        // 상대 화면에서 내 목록이 사라지게 빈 몫을 남긴다.
+        const empty: TodoShare = { sessionId, todos: [], relay: [], todoFor: null }
+        try {
+          await $.fs.write(todoPath(logDir, mine), `${JSON.stringify(empty)}\n`)
+        } catch (error) {
+          $.ui.log(`plan-dev-relay: To-Do 공유 파일 쓰기 실패: ${String(error)}`)
+        }
+      }
+      await update($, partner, () => null)
       await update($, role, () => null)
       return { text: '역할을 지웠습니다.' }
     }
@@ -314,6 +420,8 @@ export const register: Register = (on, options) => {
     await writeRole($, logDir, next, sessionId, await $.clock.now())
     await update($, dir, () => logDir)
     await update($, role, () => next)
+    poll?.cancel()
+    poll = syncTimer($)
     await log($, `[${roleLabel(next)}] 역할 등록`, `session: ${sessionId}`)
     // 시스템 프롬프트는 세션 시작 때 그려지므로, 역할 안내는 명령 결과의 context로 모델에 넘긴다.
     return {

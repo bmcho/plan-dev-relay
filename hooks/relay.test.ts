@@ -5,6 +5,8 @@ import type { AgentInfo, On } from 'claude-code'
 const ROOT = '/Users/bmcho/Documents/claude/plan-dev-log/control-center'
 const ROLES = `${ROOT}/roles.json`
 const LOG = `${ROOT}/2026-10-14.md`
+const TODO_PLAN = `${ROOT}/todo-plan.json`
+const TODO_DEV = `${ROOT}/todo-dev.json`
 // 2026-10-14 08:30:00 KST
 const NOW = Date.UTC(2026, 9, 13, 23, 30, 0)
 
@@ -18,6 +20,8 @@ type World = {
   sendThrows?: boolean
   // $.agent.list()의 답. 백그라운드 에이전트를 흉내 낸다.
   agents?: AgentInfo[]
+  // 이 경로에 쓰기를 실패시킨다.
+  failWrite?: string
 }
 
 // 엔진 바닥을 흉내 낸다. 테스트의 on() hook은 plugin 아래에 놓인다.
@@ -30,8 +34,14 @@ const engine = (on: On, sessionId: string, world: World) => {
     value: { root: '/Users/bmcho/Documents/git/control-center', remote: null, internal: false } as never,
   }))
   on('fs.exists', ($, e) => ({ value: world.files.has(e.path) }))
-  on('fs.read', ($, e) => ({ value: world.files.get(e.path) ?? '' }))
+  // 실제 엔진처럼 없는 파일 읽기는 예외로 끝난다.
+  on('fs.read', ($, e) => {
+    const text = world.files.get(e.path)
+    if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
+    return { value: text }
+  })
   on('fs.write', ($, e) => {
+    if (e.path === world.failWrite) throw new Error(`EACCES: ${e.path}`)
     world.files.set(e.path, e.text)
     return { value: undefined }
   })
@@ -61,7 +71,18 @@ const engine = (on: On, sessionId: string, world: World) => {
   on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
   on('turn.complete', () => ({ text: '' }))
-  on('tool.call', () => ({ result: {}, isError: false, text: 'ok' }) as never)
+  // TaskCreate는 실제 세션처럼 id를 1부터 차례로 준다.
+  let taskId = 0
+  on('tool.call', ($, e) => {
+    if (e.tool === 'TaskCreate') {
+      taskId += 1
+      return { result: { task: { id: String(taskId), subject: e.subject } }, isError: false, text: 'ok' } as never
+    }
+    if (e.tool === 'TaskUpdate') {
+      return { result: { success: true, taskId: e.taskId, updatedFields: ['status'] }, isError: false, text: 'ok' } as never
+    }
+    return { result: {}, isError: false, text: 'ok' } as never
+  })
   on('prompt.compose', () => ({ sections: [{ id: 'intro', text: 'base', scope: 'shared' }] }))
   on('agent.list', () => ({ value: world.agents ?? [] }))
   on('session.start', ($, e) => ({ cwd: e.cwd }))
@@ -893,4 +914,88 @@ test('a reloaded session counts running agents again and keeps the character mov
   expect(await band.find({ type: 'Text', text: /기획 중/ })).toBeDefined()
   expect(await band.find({ type: 'Text', text: /oO\( … \)/ })).toBeDefined()
   await band.unmount()
+})
+
+// To-Do 공유: 2초마다 내 몫을 쓰고 상대 몫을 읽는다.
+const shared = (world: World, path: string) => JSON.parse(world.files.get(path) ?? 'null')
+const EMPTY_DEV = { sessionId: 'S-DEV', todos: [], relay: [], todoFor: null }
+
+test('a session with a role writes its To-Do share every 2 seconds, only when it changed', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  const clock = engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+
+  expect(world.files.has(TODO_DEV)).toBe(false)
+  await clock.advance(2000)
+  expect(shared(world, TODO_DEV)).toEqual(EMPTY_DEV)
+  // 짝(기획)이 아직 공유 파일을 쓰지 않았어도 알리지 않는다.
+  expect(world.uiLogs).toEqual([])
+
+  world.files.delete(TODO_DEV)
+  await clock.advance(2000)
+  expect(world.files.has(TODO_DEV)).toBe(false)
+})
+
+test('a broken roles.json does not repeat a notice every 2 seconds and the share is still written', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  const clock = engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+  world.files.set(ROLES, '{broken')
+
+  await clock.advance(6000)
+
+  expect(world.uiLogs).toEqual([])
+  expect(shared(world, TODO_DEV)).toEqual(EMPTY_DEV)
+})
+
+test('session.start restarts sharing for a session that already has a role', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  const clock = engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+  await clock.advance(2000)
+  world.files.delete(TODO_DEV)
+
+  // hot reload처럼 session.start가 다시 오면 기억을 비우고 처음부터 다시 쓴다.
+  await $.session.start({
+    cwd: '/Users/bmcho/Documents/git/control-center',
+    surface: 'terminal',
+    isInteractive: true,
+  } as never)
+  await clock.advance(2000)
+
+  expect(shared(world, TODO_DEV)).toEqual(EMPTY_DEV)
+})
+
+test('/role off stops sharing and leaves an empty share', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  const clock = engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+  await clock.advance(2000)
+  world.files.delete(TODO_DEV)
+
+  await $.command.run({ command: 'role', args: 'off' } as never)
+  expect(shared(world, TODO_DEV)).toEqual(EMPTY_DEV)
+
+  world.files.delete(TODO_DEV)
+  await clock.advance(4000)
+  expect(world.files.has(TODO_DEV)).toBe(false)
+})
+
+test('a failing share write is noticed once until a write works again', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  const clock = engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+  world.failWrite = TODO_DEV
+
+  await clock.advance(6000)
+  expect(world.uiLogs.filter(line => line.includes('To-Do 공유 파일 쓰기 실패'))).toHaveLength(1)
+
+  world.failWrite = undefined
+  await clock.advance(2000)
+  expect(shared(world, TODO_DEV)).toEqual(EMPTY_DEV)
 })

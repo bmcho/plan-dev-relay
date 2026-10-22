@@ -28,6 +28,14 @@ declare module 'claude-code' {
       review: Review
       // 메인이 띄운 서브에이전트 중 아직 일하는 것의 id. 이 동안은 세션이 일하는 중으로 본다.
       agents: string[]
+      // 이 세션 에이전트의 To-Do. 완료 항목도 남긴다.
+      todos: AgentTodo[]
+      // 기획: 가장 최근 지시의 행
+      relay: RelayItem[]
+      // 개발: todos가 속한 지시의 제목
+      todoFor: string | null
+      // 2초마다 읽은 짝의 공유 파일
+      partner: TodoShare | null
     }
   }
 }
