@@ -43,7 +43,7 @@ import {
   type Roles,
   type Sender,
 } from './core'
-import { parseShare } from './todo'
+import { applyTaskCreate, applyTaskUpdate, applyTodoWrite, parseShare } from './todo'
 
 const P = 'plan-dev-relay'
 export const role = atom({ plugin: 'plan-dev-relay', key: 'role' } as const, null)
@@ -219,6 +219,11 @@ const syncTimer = ($: EngineInterface) => {
 
 const startTask = async ($: EngineInterface, next: Task) => {
   const current = await read($, task)
+  // 기획 지시가 새 작업을 시작하면 To-Do를 그 지시의 것으로 새로 시작한다. 추가 지시는 그대로 둔다.
+  if (next.source === 'plan' && current?.source !== 'plan') {
+    await update($, todos, () => [])
+    await update($, todoFor, () => next.title)
+  }
   if (current === null) {
     await update($, task, () => next)
     await update($, edits, () => [])
@@ -551,8 +556,23 @@ export const register: Register = (on, options) => {
 
   on('tool.call', async ($, e, next) => {
     const ran = await next(e)
-    if ((await read($, role)) !== 'dev' || (await read($, task)) === null) return ran
+    const mine = await read($, role)
+    const current = await read($, task)
     const isOk = ran.deny === undefined && ran.isError !== true
+
+    // 에이전트 To-Do: 메인 루프의 성공한 호출만 모은다. 개발은 기획 지시를 하는 동안만 모은다.
+    const collects = mine === 'plan' || (mine === 'dev' && current?.source === 'plan')
+    if (collects && isOk && e.agentId === undefined) {
+      if (e.tool === 'TaskCreate') {
+        await update($, todos, list => applyTaskCreate(list, ran.result))
+      } else if (e.tool === 'TaskUpdate') {
+        await update($, todos, list => applyTaskUpdate(list, e, ran.result))
+      } else if (e.tool === 'TodoWrite') {
+        await update($, todos, list => applyTodoWrite(list, e.todos))
+      }
+    }
+
+    if (mine !== 'dev' || current === null) return ran
 
     if ((e.tool === 'Edit' || e.tool === 'Write') && isOk) {
       await update($, edits, list => (list.includes(e.file_path) ? list : [...list, e.file_path]))

@@ -999,3 +999,102 @@ test('a failing share write is noticed once until a write works again', async ($
   await clock.advance(2000)
   expect(shared(world, TODO_DEV)).toEqual(EMPTY_DEV)
 })
+
+test('dev shares the Todos of a planned task and starts over on the next instruction', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  const clock = engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+
+  await $.session.receive({ origin: { kind: 'peer' }, text: tag('plan', 'S-PLAN', '경로 API 추가\n상세') } as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: '테스트 작성', description: 'd' } as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: '구현', description: 'd' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' } as never)
+  // 작업 중에 온 추가 지시는 To-Do를 그대로 둔다.
+  await $.session.receive({ origin: { kind: 'peer' }, text: tag('plan', 'S-PLAN', '추가 지시') } as never)
+  await clock.advance(2000)
+  expect(shared(world, TODO_DEV)).toEqual({
+    sessionId: 'S-DEV',
+    todos: [
+      { id: '1', text: '테스트 작성', status: 'completed' },
+      { id: '2', text: '구현', status: 'pending' },
+    ],
+    relay: [],
+    todoFor: '경로 API 추가',
+  })
+
+  await devTurn($, 'done')
+  await $.session.receive({ origin: { kind: 'peer' }, text: tag('plan', 'S-PLAN', '다음 작업') } as never)
+  // 이전 지시의 id로 온 갱신은 비운 목록에 옛 항목을 되살리지 않는다.
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '2', status: 'completed' } as never)
+  await clock.advance(2000)
+  expect(shared(world, TODO_DEV).todos).toEqual([])
+  expect(shared(world, TODO_DEV).todoFor).toBe('다음 작업')
+})
+
+test('dev keeps both of two task updates that run at the same time', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  const clock = engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+  await $.session.receive({ origin: { kind: 'peer' }, text: tag('plan', 'S-PLAN', '경로 API') } as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: '설계', description: 'd' } as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: '구현', description: 'd' } as never)
+
+  // 한 답변 안의 병렬 도구 호출
+  await Promise.all([
+    $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' } as never),
+    $.tool.call({ tool: 'TaskUpdate', taskId: '2', status: 'in_progress' } as never),
+  ])
+  await clock.advance(2000)
+
+  expect(shared(world, TODO_DEV).todos).toEqual([
+    { id: '1', text: '설계', status: 'completed' },
+    { id: '2', text: '구현', status: 'in_progress' },
+  ])
+})
+
+test('dev ignores Todos of direct work and of subagents, and starts them for an instruction that arrives during direct work', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  const clock = engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+
+  await $.prompt.submit(userPrompt('직접 고쳐 줘'))
+  await $.tool.call({ tool: 'TaskCreate', subject: '직접 작업 단계', description: 'd' } as never)
+  await clock.advance(2000)
+  expect(shared(world, TODO_DEV).todos).toEqual([])
+
+  // 직접 작업을 하는 중에 지시가 온다.
+  await $.session.receive({ origin: { kind: 'peer' }, text: tag('plan', 'S-PLAN', '경로 API') } as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: '서브에이전트 단계', description: 'd', agentId: 'A1' } as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: '지시 단계', description: 'd' } as never)
+  await clock.advance(2000)
+
+  // 테스트 엔진은 모든 TaskCreate에 id를 차례로 주므로 지시 단계의 id는 3이다.
+  expect(shared(world, TODO_DEV)).toEqual({
+    sessionId: 'S-DEV',
+    todos: [{ id: '3', text: '지시 단계', status: 'pending' }],
+    relay: [],
+    todoFor: '경로 API',
+  })
+})
+
+test('plan always shares the Todos its own agent keeps', async ($, on) => {
+  const world = newWorld()
+  const clock = await planWithDev($, on, world)
+
+  await $.tool.call({
+    tool: 'TodoWrite',
+    todos: [
+      { content: '요구 정리', status: 'completed', activeForm: '요구 정리 중' },
+      { content: '계획 작성', status: 'in_progress', activeForm: '계획 작성 중' },
+    ],
+  } as never)
+  await clock.advance(2000)
+
+  expect(shared(world, TODO_PLAN).todos).toEqual([
+    { text: '요구 정리', status: 'completed' },
+    { text: '계획 작성', status: 'in_progress' },
+  ])
+})
