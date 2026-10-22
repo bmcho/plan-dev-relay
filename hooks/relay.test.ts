@@ -1283,3 +1283,43 @@ test('band uses every row it may take and shows part of the list only past that'
   expect(await short.find({ type: 'Text', text: '단계 C' })).toBeUndefined()
   await short.unmount()
 })
+
+test("a session that lost its role to another session leaves that session's share alone", async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  const clock = engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+  await clock.advance(2000)
+
+  // 다른 세션이 개발 역할을 가져가 자기 몫을 썼다.
+  const roles = JSON.parse(world.files.get(ROLES) ?? '{}')
+  roles.dev = { sessionId: 'S-DEV2', updatedAt: 't' }
+  world.files.set(ROLES, JSON.stringify(roles))
+  const live = `${JSON.stringify({ sessionId: 'S-DEV2', todos: [], relay: [], todoFor: '새 작업' })}\n`
+  world.files.set(TODO_DEV, live)
+
+  // 다시 불러와 쓰기 기억이 비어도, /role off를 해도 그 세션의 파일을 덮어쓰지 않는다.
+  await $.session.start({ cwd: '/Users/bmcho/Documents/git/control-center', surface: 'terminal', isInteractive: true } as never)
+  await clock.advance(2000)
+  expect(world.files.get(TODO_DEV)).toBe(live)
+  await $.command.run({ command: 'role', args: 'off' } as never)
+  expect(world.files.get(TODO_DEV)).toBe(live)
+})
+
+type Drawn = { type: string; props?: Record<string, unknown>; children?: Drawn[] }
+
+test('band keeps the character and the label at their width next to a long list line', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+  const title = '로그인 화면에 이메일과 비밀번호 입력 검증을 추가하고 오류 문구를 보여 준다'
+  await $.session.send({ to: 'dev-session', text: title, origin: { kind: 'model' } })
+
+  // 긴 줄을 접으려고 터미널이 열을 줄이면 캐릭터와 이름표가 깨진다. 두 칸은 줄어들지 않아야 한다.
+  const band = await mountBand($)
+  const [art, right] = ((await band.drawn()) as Drawn).children ?? []
+  const label = right?.children?.[0]?.children?.[0]
+  expect(art?.props?.flexShrink).toBe(0)
+  expect(label?.type).toBe('Box')
+  expect(label?.props?.flexShrink).toBe(0)
+  await band.unmount()
+})

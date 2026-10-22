@@ -110,12 +110,13 @@ const writeRole = async (
   await $.fs.write(rolesPath(logDir), `${JSON.stringify(roles, null, 2)}\n`)
 }
 
-// 다른 세션이 같은 역할로 다시 등록했으면 그 항목은 남긴다.
+// 다른 세션이 같은 역할로 다시 등록했으면 그 항목은 남긴다. 이 세션이 역할을 갖고 있었는지 돌려준다.
 const clearRole = async ($: EngineInterface, logDir: string, mine: Role, sessionId: string) => {
   const roles = await readRoles($, logDir)
-  if (roles[mine]?.sessionId !== sessionId) return
+  if (roles[mine]?.sessionId !== sessionId) return false
   delete roles[mine]
   await $.fs.write(rolesPath(logDir), `${JSON.stringify(roles, null, 2)}\n`)
+  return true
 }
 
 // 두 세션이 같은 파일에 쓰므로 read+write 대신 O_APPEND(>>)로 덧붙인다.
@@ -164,12 +165,12 @@ const myShare = async ($: EngineInterface, mine: Role): Promise<TodoShare> => ({
   todoFor: mine === 'dev' ? await read($, todoFor) : null,
 })
 
-// 2초마다 읽으므로 깨진 roles.json을 알리지 않는다. 알림은 /role 때 readRoles가 한다.
-const partnerIdOf = async ($: EngineInterface, logDir: string, other: Role) => {
+// 2초마다 읽으므로 깨진 roles.json을 알리지 않는다. 알림은 /role 때 readRoles가 한다. 없거나 깨졌으면 null.
+const quietRoles = async ($: EngineInterface, logDir: string) => {
   try {
-    return parseRoles(String(await $.fs.read(rolesPath(logDir))))?.[other]?.sessionId
+    return parseRoles(String(await $.fs.read(rolesPath(logDir))))
   } catch {
-    return undefined
+    return null
   }
 }
 
@@ -185,8 +186,12 @@ const sync = async ($: EngineInterface, memo: SyncMemo) => {
   const logDir = await read($, dir)
   if (mine === null || logDir === '') return
 
-  const text = `${JSON.stringify(await myShare($, mine))}\n`
-  if (text !== memo.written) {
+  const roles = await quietRoles($, logDir)
+  const own = await myShare($, mine)
+  const text = `${JSON.stringify(own)}\n`
+  // 다른 세션이 내 역할을 가져갔으면 그 세션의 파일을 덮어쓰지 않는다. roles.json이 없거나 깨졌으면 계속 쓴다.
+  const holder = roles?.[mine]?.sessionId
+  if ((holder === undefined || holder === own.sessionId) && text !== memo.written) {
     try {
       await $.fs.write(todoPath(logDir, mine), text)
       memo.written = text
@@ -198,7 +203,7 @@ const sync = async ($: EngineInterface, memo: SyncMemo) => {
   }
 
   const other: Role = mine === 'plan' ? 'dev' : 'plan'
-  const partnerId = await partnerIdOf($, logDir, other)
+  const partnerId = roles?.[other]?.sessionId
   if (partnerId === undefined) return forget($, memo)
   let found: string
   try {
@@ -412,13 +417,14 @@ export const register: Register = (on, options) => {
       if (mine !== null) {
         const logDir = await read($, dir)
         const sessionId = await $.session.id()
-        await clearRole($, logDir, mine, sessionId)
-        // 상대 화면에서 내 목록이 사라지게 빈 몫을 남긴다.
-        const empty: TodoShare = { sessionId, todos: [], relay: [], todoFor: null }
-        try {
-          await $.fs.write(todoPath(logDir, mine), `${JSON.stringify(empty)}\n`)
-        } catch (error) {
-          $.ui.log(`plan-dev-relay: To-Do 공유 파일 쓰기 실패: ${String(error)}`)
+        // 상대 화면에서 내 목록이 사라지게 빈 몫을 남긴다. 역할을 가져간 다른 세션의 파일은 덮어쓰지 않는다.
+        if (await clearRole($, logDir, mine, sessionId)) {
+          const empty: TodoShare = { sessionId, todos: [], relay: [], todoFor: null }
+          try {
+            await $.fs.write(todoPath(logDir, mine), `${JSON.stringify(empty)}\n`)
+          } catch (error) {
+            $.ui.log(`plan-dev-relay: To-Do 공유 파일 쓰기 실패: ${String(error)}`)
+          }
         }
       }
       await update($, partner, () => null)
@@ -655,6 +661,7 @@ export const register: Register = (on, options) => {
     // 이름표가 1줄을 쓰므로 목록은 maxRows - 1줄까지 그린다. band가 높아져도 목록을 자르지 않는 쪽을 택했다.
     // 긴 글은 접는다. 기호 칸은 줄어들지 않게 따로 두어 접힌 줄이 글 시작에 맞춰진다.
     // 상대가 일하는 중일 수 있어 쉬는 동안에도 목록은 흐리게 하지 않는다.
+    // 긴 줄을 접으려고 터미널이 열을 줄여도 캐릭터와 이름표는 줄어들지 않게 한다.
     const own = await read($, todos)
     const other = await read($, partner)
     const list = todoLines(
@@ -666,7 +673,7 @@ export const register: Register = (on, options) => {
 
     return (
       <Box flexDirection="row" alignItems="center">
-        <Box flexDirection="column">
+        <Box flexDirection="column" flexShrink={0}>
           {lines.map(line => (
             <Text color={ORANGE} dimColor={!busy}>
               {line}
@@ -675,9 +682,11 @@ export const register: Register = (on, options) => {
         </Box>
         <Box flexDirection="column" marginLeft={3}>
           <Box flexDirection="row">
-            <Text bold dimColor={!busy} {...LABEL_STYLE[mine]}>
-              {label}
-            </Text>
+            <Box flexShrink={0}>
+              <Text bold dimColor={!busy} {...LABEL_STYLE[mine]}>
+                {label}
+              </Text>
+            </Box>
             {busy && current !== null && (
               <Text dimColor wrap="truncate">
                 {`  ${current.title}`}
