@@ -5,6 +5,14 @@ export type CommandRun = { command: string; isOk: boolean }
 // 검수 뒤 진행 방식: 수동(검수만), 오토(반려면 다시 지시), 풀오토(다음 작업과 결정까지).
 // rounds: 마지막 사용자 프롬프트 뒤로 사람 없이 이어 가게 넘긴 보고 수
 export type Review = { mode: 'manual' | 'auto' | 'full'; max: number; rounds: number }
+// 에이전트가 TaskCreate·TaskUpdate·TodoWrite로 적은 단계. id는 TaskCreate가 준 값이고 TodoWrite 항목에는 없다.
+export type AgentTodo = { id?: string; text: string; status: 'pending' | 'in_progress' | 'completed' }
+// 기획이 보낸 지시의 첫 줄과 그 진행 상태
+export type RelayItem = { title: string; status: 'working' | 'reviewing' | 'passed' | 'rejected' }
+// <logDir>/todo-<역할>.json의 내용. relay는 기획만, todoFor(개발 Todo가 속한 지시 제목)는 개발만 채운다.
+export type TodoShare = { sessionId: string; todos: AgentTodo[]; relay: RelayItem[]; todoFor: string | null }
+// 기획이 짝 개발 세션의 봉투에서 배운 주소(from)와 이름(from-name)
+export type DevNames = { sessionId: string; names: string[] }
 
 declare module 'claude-code' {
   interface PluginState {
