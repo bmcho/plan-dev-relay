@@ -18,6 +18,9 @@ export const baseName = (path: string) => path.split('/').filter(Boolean).pop() 
 // dir: 한 repo의 로그 폴더 (<logRoot>/<repo 이름>)
 export const rolesPath = (dir: string) => `${dir}/roles.json`
 
+// 역할별 To-Do 공유 파일. 각 세션은 자기 파일만 쓰고 상대 파일만 읽는다.
+export const todoPath = (dir: string, role: Role) => `${dir}/todo-${role}.json`
+
 export const dayStamp = (ms: number) => new Date(ms + KST_MS).toISOString().slice(0, 10)
 
 export const timeStamp = (ms: number) => new Date(ms + KST_MS).toISOString().slice(11, 19)
@@ -32,6 +35,14 @@ export const unwrap = (text: string) =>
     .split('\n')
     .filter(line => !WRAPPER.test(line.trim()))
     .join('\n')
+
+// 봉투에 적힌 보낸 쪽의 주소(from)와 이름(from-name). 기획 모델이 이 값으로 답장하기도 한다.
+export const envelopeNames = (text: string) => {
+  const open = /<cross-session-message\s([^>]*)>/.exec(text)?.[1] ?? ''
+  return [...open.matchAll(/\b(?:from|from-name)="([^"]*)"/g)]
+    .map(found => found[1] ?? '')
+    .filter(name => name !== '')
+}
 
 export const firstLine = (text: string) =>
   (unwrap(text).split('\n').find(line => line.trim() !== '') ?? '').trim().slice(0, 80)
@@ -115,6 +126,7 @@ export const planGuide = () =>
     '개발 세션이 등록되지 않았으면 mod가 이유와 함께 거절한다. 그때는 사용자에게 다른 세션에서 `/role dev` 입력을 요청한다.',
     '지시에는 첫 줄에 작업 제목, 이어서 목표, 대상 파일, 완료 조건을 적는다. 완료 조건은 검수할 수 있게 항목별로 적는다.',
     '개발 세션의 보고가 오면 mod가 검수를 요청한다. 검수 때는 파일 읽기, git diff, 테스트 실행을 직접 한다. 보고를 기다리며 폴링하지 않는다.',
+    '계획 단계도 TaskCreate·TaskUpdate(없으면 TodoWrite)로 적고 진행에 맞춰 상태를 바꾼다. 이 목록은 개발 세션 화면에도 보인다.',
   ].join('\n')
 
 export const DEFAULT_REVIEW_ROUNDS = 3
@@ -253,4 +265,5 @@ export const devGuide = () =>
     '이 세션은 개발 담당이다. 다른 세션이 보낸 메시지는 기획 세션의 작업 지시다.',
     '작업이 끝나면 결과가 기획 세션에 자동으로 보고된다. SendMessage로 기획 세션에 따로 답하지 않는다.',
     '마지막 답변에는 무엇을 바꿨는지, 테스트 결과, 남은 문제를 적는다.',
+    '단계가 여럿인 지시는 TaskCreate·TaskUpdate(없으면 TodoWrite)로 단계를 적고 진행에 맞춰 상태를 바꾼다. 이 목록은 기획 세션 화면에도 보인다.',
   ].join('\n')

@@ -4,7 +4,9 @@ import { artFor } from './art'
 import {
   buildReport,
   dayStamp,
+  devGuide,
   entry,
+  envelopeNames,
   expandHome,
   firstLine,
   logPath,
@@ -21,6 +23,7 @@ import {
   reviewStatus,
   tagLine,
   timeStamp,
+  todoPath,
   unwrap,
   withTag,
 } from './core'
@@ -270,4 +273,24 @@ test('reviewGuide and reviewStatus describe each mode with the user-facing names
   expect(reviewStatus(full)).toContain('최대 20회, 지금 2회 진행')
   expect(reviewGuide(full)).toContain('사용자 승인 없이')
   expect(reviewGuide(full)).toContain('계획과 진행 상태는 그 문서에 적고')
+})
+
+test('todoPath names the share file of each role', () => {
+  expect(todoPath('/logs/control-center', 'plan')).toBe('/logs/control-center/todo-plan.json')
+  expect(todoPath('/logs/control-center', 'dev')).toBe('/logs/control-center/todo-dev.json')
+})
+
+test('envelopeNames reads the sender address and name from the engine wrapper', () => {
+  const wrapped = [
+    '<cross-session-message from="uds:/tmp/cc-socks/1.sock" from-name="control-center-1" from-mode="prompting">',
+    '본문',
+    '</cross-session-message>',
+  ].join('\n')
+  expect(envelopeNames(wrapped)).toEqual(['uds:/tmp/cc-socks/1.sock', 'control-center-1'])
+  expect(envelopeNames('본문만')).toEqual([])
+})
+
+test('both role guides ask the agent to keep its steps with the task tools', () => {
+  expect(planGuide()).toContain('TaskCreate·TaskUpdate(없으면 TodoWrite)')
+  expect(devGuide()).toContain('TaskCreate·TaskUpdate(없으면 TodoWrite)')
 })
