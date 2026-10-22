@@ -52,6 +52,7 @@ import {
   relayOnReport,
   relayOnSend,
   relayOnVerdict,
+  todoLines,
 } from './todo'
 
 const P = 'plan-dev-relay'
@@ -650,6 +651,17 @@ export const register: Register = (on, options) => {
     const lines = artFor(mine, busy ? await read($, frame) : 0)
     const current = await read($, task)
     const label = `   ${roleLabel(mine)} ${busy ? '중' : '대기'}   `
+    // 두 세션이 같은 목록을 그린다. 내 몫은 상태에서, 상대 몫은 2초마다 읽은 공유 파일에서 가져온다.
+    // 이름표가 1줄을 쓰므로 목록은 maxRows - 1줄까지 그린다. band가 높아져도 목록을 자르지 않는 쪽을 택했다.
+    // 긴 글은 접는다. 기호 칸은 줄어들지 않게 따로 두어 접힌 줄이 글 시작에 맞춰진다.
+    // 상대가 일하는 중일 수 있어 쉬는 동안에도 목록은 흐리게 하지 않는다.
+    const own = await read($, todos)
+    const other = await read($, partner)
+    const list = todoLines(
+      mine === 'plan' ? { todos: own, relay: await read($, relay) } : other,
+      mine === 'dev' ? { todos: own, todoFor: await read($, todoFor) } : other,
+      e.props.maxRows - 1,
+    )
     const { Box, Text } = $.ui.resolve(e)
 
     return (
@@ -661,15 +673,29 @@ export const register: Register = (on, options) => {
             </Text>
           ))}
         </Box>
-        <Box flexDirection="row" marginLeft={3}>
-          <Text bold dimColor={!busy} {...LABEL_STYLE[mine]}>
-            {label}
-          </Text>
-          {busy && current !== null && (
-            <Text dimColor wrap="truncate">
-              {`  ${current.title}`}
+        <Box flexDirection="column" marginLeft={3}>
+          <Box flexDirection="row">
+            <Text bold dimColor={!busy} {...LABEL_STYLE[mine]}>
+              {label}
             </Text>
-          )}
+            {busy && current !== null && (
+              <Text dimColor wrap="truncate">
+                {`  ${current.title}`}
+              </Text>
+            )}
+          </Box>
+          {list.map(line => (
+            <Box flexDirection="row">
+              {line.prefix !== '' && (
+                <Box flexShrink={0}>
+                  <Text dimColor={line.isDone}>{line.prefix}</Text>
+                </Box>
+              )}
+              <Text bold={line.isHeader} dimColor={line.isDone} wrap="wrap">
+                {line.text}
+              </Text>
+            </Box>
+          ))}
         </Box>
       </Box>
     )

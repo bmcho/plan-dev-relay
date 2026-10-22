@@ -1174,3 +1174,112 @@ test('plan does not use dev names learned from an earlier dev session', async ($
   expect(world.sends[0]?.to).toBe('control-center-1')
   expect(world.files.get(LOG) ?? '').not.toContain('[기획→개발] 지시')
 })
+
+const mountBand = ($: Engine, maxRows = 20) =>
+  $.ui.mount({ ...BAND, surface: 'terminal', props: { ...BAND.props, maxRows } })
+
+test('plan draws the dev Todos read from the dev share under the matching instruction', async ($, on) => {
+  const world = newWorld()
+  const clock = await planWithDev($, on, world)
+  await $.session.send({ to: 'dev-session', text: '경로 API 추가', origin: { kind: 'model' } })
+  world.files.set(
+    TODO_DEV,
+    JSON.stringify({
+      sessionId: 'S-DEV',
+      todos: [{ id: '1', text: '테스트 작성', status: 'in_progress' }],
+      relay: [],
+      todoFor: '경로 API 추가',
+    }),
+  )
+  await clock.advance(2000)
+
+  const band = await mountBand($)
+  expect(await band.find({ type: 'Text', text: '릴레이 To-Do  완료 0/1' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '경로 API 추가  개발 중' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '테스트 작성' })).toBeDefined()
+  await band.unmount()
+})
+
+test('dev draws the plan share and its own Todos in the same list', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  const clock = engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+  await $.session.receive({ origin: { kind: 'peer' }, text: tag('plan', 'S-PLAN', '경로 API 추가') } as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: '테스트 작성', description: 'd' } as never)
+  world.files.set(
+    TODO_PLAN,
+    JSON.stringify({
+      sessionId: 'S-PLAN',
+      todos: [{ id: '1', text: '계획 작성', status: 'in_progress' }],
+      relay: [{ title: '경로 API 추가', status: 'working' }],
+      todoFor: null,
+    }),
+  )
+  await clock.advance(2000)
+
+  const band = await mountBand($)
+  expect(await band.find({ type: 'Text', text: '기획 To-Do  완료 0/1' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '계획 작성' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '경로 API 추가  개발 중' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '테스트 작성' })).toBeDefined()
+  await band.unmount()
+})
+
+test('plan ignores an old dev share, reads it again after it comes back and keeps it over broken JSON', async ($, on) => {
+  const world = newWorld()
+  const clock = await planWithDev($, on, world)
+  await $.session.send({ to: 'dev-session', text: '경로 API 추가', origin: { kind: 'model' } })
+  const share = (sessionId: string, text: string) =>
+    JSON.stringify({ sessionId, todos: [{ text, status: 'pending' }], relay: [], todoFor: '경로 API 추가' })
+  const shows = async (text: string) => {
+    const band = await mountBand($)
+    const found = await band.find({ type: 'Text', text })
+    await band.unmount()
+    return found !== undefined
+  }
+
+  // 다른 세션이 남긴 옛 파일은 무시한다.
+  world.files.set(TODO_DEV, share('S-OLD', '옛 단계'))
+  await clock.advance(2000)
+  expect(await shows('옛 단계')).toBe(false)
+
+  world.files.set(TODO_DEV, share('S-DEV', '새 단계'))
+  await clock.advance(2000)
+  expect(await shows('새 단계')).toBe(true)
+
+  // 파일이 없어지면 지우고, 같은 글로 다시 생기면 다시 읽는다.
+  world.files.delete(TODO_DEV)
+  await clock.advance(2000)
+  expect(await shows('새 단계')).toBe(false)
+  world.files.set(TODO_DEV, share('S-DEV', '새 단계'))
+  await clock.advance(2000)
+  expect(await shows('새 단계')).toBe(true)
+
+  // 깨진 글은 무시하고 직전 값을 유지한다.
+  world.files.set(TODO_DEV, '{broken')
+  await clock.advance(2000)
+  expect(await shows('새 단계')).toBe(true)
+})
+
+test('band uses every row it may take and shows part of the list only past that', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+  const steps = [...'ABCDEFGHIJKL'].map(letter => `단계 ${letter}`)
+  await $.tool.call({
+    tool: 'TodoWrite',
+    todos: steps.map(content => ({ content, status: 'pending', activeForm: content })),
+  } as never)
+
+  // 따로 정한 상한은 없다. maxRows 20이면 12개가 모두 보인다.
+  const tall = await mountBand($)
+  expect(await tall.find({ type: 'Text', text: '기획 To-Do  완료 0/12' })).toBeDefined()
+  expect(await tall.find({ type: 'Text', text: '단계 L' })).toBeDefined()
+  await tall.unmount()
+
+  // maxRows 4: 이름표 1줄과 목록 3줄
+  const short = await mountBand($, 4)
+  expect(await short.find({ type: 'Text', text: '단계 B' })).toBeDefined()
+  expect(await short.find({ type: 'Text', text: '단계 C' })).toBeUndefined()
+  await short.unmount()
+})
