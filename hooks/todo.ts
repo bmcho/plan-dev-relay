@@ -77,3 +77,88 @@ export const parseShare = (text: string): TodoShare | null => {
     return null
   }
 }
+
+// prefix는 들여쓰기와 기호다. band가 따로 그려서 긴 글이 접혀도 기호 열이 유지된다.
+export type TodoLine = { prefix: string; text: string; isHeader: boolean; isDone: boolean }
+
+const TODO_MARK: Record<AgentTodo['status'], string> = { completed: '☑', in_progress: '▶', pending: '☐' }
+const ROW_MARK: Record<RelayItem['status'], string> = { working: '▶', reviewing: '◇', passed: '☑', rejected: '✗' }
+const ROW_LABEL: Record<RelayItem['status'], string> = {
+  working: '개발 중',
+  reviewing: '검수 중',
+  passed: '통과',
+  rejected: '반려',
+}
+
+// 줄이 모자라면 진행 중 항목(없으면 첫 대기 항목, 그것도 없으면 마지막 항목)의 바로 앞부터 보여 준다.
+export const todoWindow = (todos: AgentTodo[], size: number): AgentTodo[] => {
+  if (todos.length <= size) return todos
+  if (size <= 0) return []
+  const working = todos.findIndex(todo => todo.status === 'in_progress')
+  const waiting = todos.findIndex(todo => todo.status === 'pending')
+  const anchor = working !== -1 ? working : waiting !== -1 ? waiting : todos.length - 1
+  const start = Math.min(Math.max(anchor - 1, 0), todos.length - size)
+  return todos.slice(start, start + size)
+}
+
+const progress = (todos: AgentTodo[]) =>
+  `완료 ${todos.filter(todo => todo.status === 'completed').length}/${todos.length}`
+
+const todoLine = (todo: AgentTodo, indent: string): TodoLine => ({
+  prefix: `${indent}${TODO_MARK[todo.status]} `,
+  text: todo.text,
+  isHeader: false,
+  isDone: todo.status === 'completed',
+})
+
+// status가 null인 행은 기획 몫이 없을 때 개발의 todoFor로 만든 행이다.
+type Row = { title: string; status: RelayItem['status'] | null }
+
+const rowLine = (row: Row): TodoLine => ({
+  prefix: row.status === null ? ' ' : ` ${ROW_MARK[row.status]} `,
+  text: row.status === null ? row.title : `${row.title}  ${ROW_LABEL[row.status]}`,
+  isHeader: false,
+  isDone: row.status === 'passed',
+})
+
+// 두 세션이 같은 목록을 그린다. plan은 기획 몫, dev는 개발 몫이고 limit은 목록에 쓸 수 있는 줄 수다.
+export const todoLines = (
+  plan: { todos: AgentTodo[]; relay: RelayItem[] } | null,
+  dev: { todos: AgentTodo[]; todoFor: string | null } | null,
+  limit: number,
+): TodoLine[] => {
+  const room = Math.max(0, limit)
+  const planTodos = plan?.todos ?? []
+  const todoFor = dev?.todoFor ?? null
+  const ownTodos = dev?.todos ?? []
+  // 기획 몫이 없으면(짝 없음) 개발 Todo를 todoFor 제목의 상태 없는 행 아래에 붙인다.
+  const rows: Row[] =
+    plan !== null ? plan.relay : todoFor !== null && ownTodos.length > 0 ? [{ title: todoFor, status: null }] : []
+  // 개발 Todo는 제목이 todoFor와 같은 행 아래에만 붙는다.
+  const owner = todoFor === null ? -1 : rows.findIndex(row => row.title === todoFor)
+  const devTodos = owner === -1 ? [] : ownTodos
+
+  // 구역 제목 줄도 센다. 기획은 최소 3줄을 받고, 남은 줄을 릴레이가 쓴다.
+  const planNeed = planTodos.length === 0 ? 0 : 1 + planTodos.length
+  const relayNeed = rows.length === 0 ? 0 : 1 + rows.length + devTodos.length
+  const planSize = Math.min(planNeed, Math.max(Math.min(3, room), room - relayNeed))
+  const relaySize = Math.min(relayNeed, room - planSize)
+
+  const lines: TodoLine[] = []
+  if (planSize > 0) {
+    lines.push({ prefix: '', text: `기획 To-Do  ${progress(planTodos)}`, isHeader: true, isDone: false })
+    lines.push(...todoWindow(planTodos, planSize - 1).map(todo => todoLine(todo, ' ')))
+  }
+  if (relaySize > 0) {
+    const count = devTodos.length > 0 ? `  ${progress(devTodos)}` : ''
+    lines.push({ prefix: '', text: `릴레이 To-Do${count}`, isHeader: true, isDone: false })
+    // 행이 먼저 줄을 쓰고, 남은 줄을 개발 Todo가 쓴다.
+    const shown = rows.slice(0, relaySize - 1)
+    const todoRoom = relaySize - 1 - shown.length
+    shown.forEach((row, index) => {
+      lines.push(rowLine(row))
+      if (index === owner) lines.push(...todoWindow(devTodos, todoRoom).map(todo => todoLine(todo, '    ')))
+    })
+  }
+  return lines
+}

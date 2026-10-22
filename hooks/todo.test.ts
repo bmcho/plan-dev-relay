@@ -9,6 +9,9 @@ import {
   relayOnReport,
   relayOnSend,
   relayOnVerdict,
+  todoLines,
+  todoWindow,
+  type TodoLine,
 } from './todo'
 
 const todo = (id: string, text: string, status: AgentTodo['status'] = 'pending'): AgentTodo => ({
@@ -109,4 +112,126 @@ test('parseShare reads a share and rejects broken or odd ones', () => {
   expect(parseShare(JSON.stringify({ ...share, todos: [{ text: '설계', status: 'done' }] }))).toBeNull()
   expect(parseShare(JSON.stringify({ ...share, relay: [{ title: 1, status: 'working' }] }))).toBeNull()
   expect(parseShare(JSON.stringify({ ...share, todoFor: 3 }))).toBeNull()
+})
+
+const lineTexts = (lines: TodoLine[]) => lines.map(line => line.prefix + line.text)
+
+test('todoWindow starts one item before the one in progress and pulls back at the end', () => {
+  const list = [
+    todo('1', 'a', 'completed'),
+    todo('2', 'b', 'completed'),
+    todo('3', 'c', 'in_progress'),
+    todo('4', 'd'),
+    todo('5', 'e'),
+  ]
+  expect(todoWindow(list, 2).map(item => item.text)).toEqual(['b', 'c'])
+  expect(todoWindow(list, 9)).toBe(list)
+  expect(todoWindow(list, 0)).toEqual([])
+  const waiting = [todo('1', 'a', 'completed'), todo('2', 'b', 'completed'), todo('3', 'c'), todo('4', 'd')]
+  expect(todoWindow(waiting, 2).map(item => item.text)).toEqual(['b', 'c'])
+  const finished = [todo('1', 'a', 'completed'), todo('2', 'b', 'completed'), todo('3', 'c', 'completed')]
+  expect(todoWindow(finished, 2).map(item => item.text)).toEqual(['b', 'c'])
+})
+
+test('todoLines draws both sections and nests the dev Todos under their instruction', () => {
+  const relay: RelayItem[] = [{ title: '회원가입 API', status: 'working' }]
+  const plan = {
+    todos: [todo('1', '요구 정리', 'completed'), todo('2', '계획 작성', 'in_progress'), todo('3', '지시 준비')],
+    relay,
+  }
+  const dev = {
+    todos: [todo('1', '예외 클래스', 'completed'), todo('2', '단위 테스트', 'in_progress'), todo('3', 'README')],
+    todoFor: '회원가입 API',
+  }
+  expect(lineTexts(todoLines(plan, dev, 8))).toEqual([
+    '기획 To-Do  완료 1/3',
+    ' ☑ 요구 정리',
+    ' ▶ 계획 작성',
+    '릴레이 To-Do  완료 1/3',
+    ' ▶ 회원가입 API  개발 중',
+    '    ☑ 예외 클래스',
+    '    ▶ 단위 테스트',
+    '    ☐ README',
+  ])
+})
+
+test('todoLines splits the mark from the text and flags headers and finished lines', () => {
+  const relay: RelayItem[] = [{ title: '1차', status: 'passed' }]
+  expect(todoLines({ todos: [todo('1', '설계', 'completed')], relay }, null, 8)).toEqual([
+    { prefix: '', text: '기획 To-Do  완료 1/1', isHeader: true, isDone: false },
+    { prefix: ' ☑ ', text: '설계', isHeader: false, isDone: true },
+    { prefix: '', text: '릴레이 To-Do', isHeader: true, isDone: false },
+    { prefix: ' ☑ ', text: '1차  통과', isHeader: false, isDone: true },
+  ])
+})
+
+test('todoLines shows each relay status with its mark and label', () => {
+  const relay: RelayItem[] = [
+    { title: 'a', status: 'working' },
+    { title: 'b', status: 'reviewing' },
+    { title: 'c', status: 'passed' },
+    { title: 'd', status: 'rejected' },
+  ]
+  expect(lineTexts(todoLines({ todos: [], relay }, null, 8))).toEqual([
+    '릴레이 To-Do',
+    ' ▶ a  개발 중',
+    ' ◇ b  검수 중',
+    ' ☑ c  통과',
+    ' ✗ d  반려',
+  ])
+})
+
+test('todoLines hides dev Todos that belong to another instruction', () => {
+  const relay: RelayItem[] = [{ title: '2차', status: 'working' }]
+  const dev = { todos: [todo('1', '옛 단계')], todoFor: '1차' }
+  expect(lineTexts(todoLines({ todos: [], relay }, dev, 8))).toEqual(['릴레이 To-Do', ' ▶ 2차  개발 중'])
+})
+
+test('todoLines puts dev Todos under the todoFor title when there is no plan partner', () => {
+  const dev = { todos: [todo('1', '단계', 'in_progress')], todoFor: '1차' }
+  expect(lineTexts(todoLines(null, dev, 8))).toEqual(['릴레이 To-Do  완료 0/1', ' 1차', '    ▶ 단계'])
+  // Todo가 없으면 제목만 따로 그리지 않는다. 이름표 옆의 작업 제목과 겹친다.
+  expect(todoLines(null, { todos: [], todoFor: '1차' }, 8)).toEqual([])
+})
+
+test('todoLines draws nothing when both sides are empty', () => {
+  expect(todoLines({ todos: [], relay: [] }, { todos: [], todoFor: null }, 8)).toEqual([])
+  expect(todoLines(null, null, 8)).toEqual([])
+})
+
+test('todoLines keeps at least three plan lines and gives the rest to the relay', () => {
+  const relay: RelayItem[] = [{ title: '1차', status: 'working' }]
+  const plan = { todos: ['p1', 'p2', 'p3', 'p4'].map((text, i) => todo(String(i + 1), text)), relay }
+  const dev = {
+    todos: ['d1', 'd2', 'd3', 'd4', 'd5', 'd6'].map((text, i) => todo(String(i + 1), text)),
+    todoFor: '1차',
+  }
+  expect(lineTexts(todoLines(plan, dev, 8))).toEqual([
+    '기획 To-Do  완료 0/4',
+    ' ☐ p1',
+    ' ☐ p2',
+    '릴레이 To-Do  완료 0/6',
+    ' ▶ 1차  개발 중',
+    '    ☐ d1',
+    '    ☐ d2',
+    '    ☐ d3',
+  ])
+  // 릴레이가 적게 쓰면 기획이 남은 줄을 쓴다.
+  expect(lineTexts(todoLines(plan, null, 8))).toEqual([
+    '기획 To-Do  완료 0/4',
+    ' ☐ p1',
+    ' ☐ p2',
+    ' ☐ p3',
+    ' ☐ p4',
+    '릴레이 To-Do',
+    ' ▶ 1차  개발 중',
+  ])
+})
+
+test('todoLines fits a smaller limit and draws nothing without room', () => {
+  const relay: RelayItem[] = [{ title: '1차', status: 'working' }]
+  const plan = { todos: [todo('1', 'p1'), todo('2', 'p2')], relay }
+  expect(lineTexts(todoLines(plan, null, 4))).toEqual(['기획 To-Do  완료 0/2', ' ☐ p1', ' ☐ p2', '릴레이 To-Do'])
+  expect(todoLines(plan, null, 0)).toEqual([])
+  expect(todoLines(plan, null, -1)).toEqual([])
 })
