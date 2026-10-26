@@ -13,6 +13,7 @@ import {
   expandHome,
   firstLine,
   logPath,
+  modelLine,
   parseEffort,
   parseRelayArgs,
   parseRoles,
@@ -335,6 +336,13 @@ test('effortFor picks the level by the model family in the id', () => {
   expect(effortFor('claude-sonnet-5-5[1m]', levels)).toBe('high')
   expect(effortFor('claude-opus-5-5', levels)).toBe('max')
   expect(effortFor('claude-fable-5-1', levels)).toBeUndefined()
+})
+
+test('modelLine drops the claude- prefix and adds the effort only when the model has one', () => {
+  expect(modelLine('claude-opus-5-5', 'max')).toBe('opus-5-5 · max')
+  expect(modelLine('claude-sonnet-5-5[1m]', 'high')).toBe('sonnet-5-5[1m] · high')
+  expect(modelLine('claude-haiku-5-5', undefined)).toBe('haiku-5-5')
+  expect(modelLine('claude-fable-5-1', 12000)).toBe('fable-5-1 · 12000')
 })
 
 test('agentCap takes a whole number from 0 and falls back to 3 otherwise', () => {

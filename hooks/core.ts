@@ -34,6 +34,10 @@ export const effortFor = (model: string, levels: EffortLevels) => {
   return family === undefined ? undefined : levels[family]
 }
 
+// 캐릭터 발 밑에 작게 보일 한 줄. 모델 id의 claude- 앞머리는 뗀다. effort를 받지 않는 모델은 모델만 보인다.
+export const modelLine = (model: string, effort?: string | number) =>
+  `${model.replace(/^claude-/, '')}${effort === undefined ? '' : ` · ${effort}`}`
+
 // 0이면 제한하지 않는다. 0 이상의 정수가 아니면 기본값을 쓴다.
 export const agentCap = (value: unknown) =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : DEFAULT_MAX_AGENTS

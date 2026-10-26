@@ -1494,3 +1494,80 @@ test(
     expect(world.toasts.join('\n')).toContain('haiku=lo')
   },
 )
+
+test('band shows the main loop model and effort from its latest request', async ($, on) => {
+  const world = newWorld()
+  engine(on, 'S-X', world)
+  stepper(on)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+
+  await step($, 'claude-opus-5-5', 'max')
+  // 서브에이전트의 요청은 메인의 표시를 바꾸지 않는다.
+  await step($, 'claude-haiku-5-5', 'low', 'A1')
+  const first = await mountBand($)
+  expect(await first.find({ type: 'Text', text: 'opus-5-5 · max' })).toBeDefined()
+  await first.unmount()
+
+  // 메인의 다음 요청이 /model로 바뀐 모델이고 effort가 없는 모델이면 모델만 보인다.
+  await step($, 'claude-sonnet-5-5', undefined)
+  const second = await mountBand($)
+  expect(await second.find({ type: 'Text', text: 'sonnet-5-5' })).toBeDefined()
+  expect(await second.find({ type: 'Text', text: /opus/ })).toBeUndefined()
+  await second.unmount()
+})
+
+test('band shows the session model until the main loop sends a request after the role is set', async ($, on) => {
+  const world = newWorld()
+  engine(on, 'S-X', world)
+  stepper(on)
+  on('session.model', () => ({ value: 'claude-opus-5-5' }))
+  // 역할이 없는 동안의 요청은 기록하지 않는다.
+  await step($, 'claude-haiku-5-5', 'low')
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+
+  const band = await mountBand($)
+  expect(await band.find({ type: 'Text', text: 'opus-5-5' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: /haiku/ })).toBeUndefined()
+  await band.unmount()
+})
+
+test('band draws the model line under the character and keeps the label level with it', async ($, on) => {
+  const world = newWorld()
+  engine(on, 'S-X', world)
+  stepper(on)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+  await step($, 'claude-opus-5-5', 'max')
+
+  const band = await mountBand($)
+  const [art, right] = ((await band.drawn()) as Drawn).children ?? []
+  // 다섯 줄 아트 아래 여섯째 줄이 모델 줄이고, 이름표 칸에는 모델이 없다.
+  expect(art?.children).toHaveLength(6)
+  expect(art?.children?.[5]).toMatchObject({ type: 'Text', props: { dimColor: true }, children: ['opus-5-5 · max'] })
+  expect(JSON.stringify(right)).not.toContain('opus')
+  // 캐릭터 칸이 한 줄 커진 만큼 이름표 칸도 한 줄 띄워서, 이름표가 캐릭터와 같은 줄에 머문다.
+  expect(right?.props?.marginBottom).toBe(1)
+  await band.unmount()
+})
+
+test('band leaves the model line out when it has no spare row and adds no spacer beside a tall list', async ($, on) => {
+  const world = newWorld()
+  engine(on, 'S-X', world)
+  stepper(on)
+  await $.command.run({ command: 'role', args: 'plan' } as never)
+  await step($, 'claude-opus-5-5', 'max')
+
+  // 캐릭터가 다섯 줄이라 maxRows 5에는 모델 줄이 들어갈 자리가 없다.
+  const tight = await mountBand($, 5)
+  expect(await tight.find({ type: 'Text', text: /opus/ })).toBeUndefined()
+  await tight.unmount()
+
+  // 목록이 캐릭터 줄 수 이상이면 이름표 칸이 이미 캐릭터 칸만큼 크다.
+  for (const letter of 'ABCD') {
+    await $.tool.call({ tool: 'TaskCreate', subject: `단계 ${letter}`, description: 'd' } as never)
+  }
+  const tall = await mountBand($)
+  const [, right] = ((await tall.drawn()) as Drawn).children ?? []
+  expect(await tall.find({ type: 'Text', text: 'opus-5-5 · max' })).toBeDefined()
+  expect(right?.props?.marginBottom ?? 0).toBe(0)
+  await tall.unmount()
+})

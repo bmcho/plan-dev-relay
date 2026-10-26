@@ -14,6 +14,9 @@ export type TodoShare = { sessionId: string; todos: AgentTodo[]; relay: RelayIte
 // 기획이 짝 개발 세션의 봉투에서 배운 주소(from)와 이름(from-name)
 export type DevNames = { sessionId: string; names: string[] }
 
+// 메인 loop의 마지막 모델 요청이 쓴 모델과 effort. effort를 받지 않는 모델은 effort가 없다.
+export type MainModel = { model: string; effort?: string | number }
+
 declare module 'claude-code' {
   interface PluginState {
     'plan-dev-relay': {
@@ -28,6 +31,8 @@ declare module 'claude-code' {
       review: Review
       // 메인이 띄운 서브에이전트 중 아직 일하는 것의 id. 이 동안은 세션이 일하는 중으로 본다.
       agents: string[]
+      // 메인 loop의 마지막 모델 요청. 아직 없으면 null
+      mainModel: MainModel | null
       // 이 세션 에이전트의 To-Do. 완료 항목도 남긴다.
       todos: AgentTodo[]
       // 기획: 가장 최근 지시의 행

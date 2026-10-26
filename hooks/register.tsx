@@ -8,7 +8,7 @@ import type {
   TurnCompleteReason,
 } from 'claude-code'
 
-import type { CommandRun, Review, Role, Task, TodoShare } from '../types'
+import type { CommandRun, MainModel, Review, Role, Task, TodoShare } from '../types'
 import { artFor, LABEL_STYLE, ORANGE } from './art'
 import {
   agentCap,
@@ -28,6 +28,7 @@ import {
   firstLine,
   logPath,
   MODE_LABEL,
+  modelLine,
   parseEffort,
   parseRelayArgs,
   parseRoles,
@@ -85,6 +86,8 @@ export const partner = atom({ plugin: 'plan-dev-relay', key: 'partner' } as cons
 // 기획: 짝 개발 세션의 봉투에서 배운 주소와 이름
 export const devNames = atom({ plugin: 'plan-dev-relay', key: 'devNames' } as const, null)
 export const agents = atom({ plugin: 'plan-dev-relay', key: 'agents' } as const, [])
+// 메인 loop의 마지막 모델 요청이 쓴 모델과 effort
+export const mainModel = atom({ plugin: 'plan-dev-relay', key: 'mainModel' } as const, null)
 
 // 엔진은 $를 받는 함수를 hook 모듈 파일 안에서만 따라간다. 그래서 입출력 함수는 이 파일에 둔다.
 const repoName = async ($: EngineInterface) => {
@@ -367,6 +370,15 @@ const refreshAgents = async ($: EngineInterface, ended?: string) => {
     old.length === ids.length && old.every((id, index) => id === ids[index]) ? old : ids,
   )
   return ids
+}
+
+// 못 읽으면 모델 표시만 빠진다. band 전체가 사라지게 하지 않는다.
+const sessionModel = async ($: EngineInterface) => {
+  try {
+    return await $.session.model()
+  } catch {
+    return ''
+  }
 }
 
 const USAGE = '사용법: /role plan | dev | off'
@@ -656,10 +668,17 @@ export const register: Register = (on, options) => {
     return started
   })
 
-  // 서브에이전트의 모델 요청마다 모델에 맞는 effort를 준다. 메인 loop와 effort가 없는 모델은 그대로 둔다.
+  // 메인 loop의 요청은 모델과 effort를 band에 보이려고 남기고, 서브에이전트의 요청마다 모델에 맞는 effort를 준다.
+  // 메인 loop와 effort가 없는 모델의 effort는 그대로 둔다.
   on('turn.step', async function* ($, e, next) {
+    const mine = await read($, role)
+    if (mine !== null && e.agentId === undefined) {
+      await update($, mainModel, old =>
+        old?.model === e.model && old.effort === e.effort ? old : { model: e.model, effort: e.effort },
+      )
+    }
     const level =
-      e.agentId === undefined || e.effort === undefined || (await read($, role)) === null
+      e.agentId === undefined || e.effort === undefined || mine === null
         ? undefined
         : effortFor(e.model, efforts.levels)
     return yield* next(level === undefined ? e : { ...e, effort: level })
@@ -714,6 +733,13 @@ export const register: Register = (on, options) => {
       mine === 'dev' ? { todos: own, todoFor: await read($, todoFor) } : other,
       e.props.maxRows - 1,
     )
+    // 요청을 보낸 뒤에는 그 요청의 모델과 effort를, 그 전에는 세션 모델만 캐릭터 발 밑에 작게 보인다.
+    // shortcut: /model로 바꾼 모델은 다음 요청부터 보인다, 바로 보이게 하려면 모델 바뀜을 따로 읽는다.
+    const used: MainModel = (await read($, mainModel)) ?? { model: await sessionModel($) }
+    // 캐릭터 아래 한 줄이 더 든다. band가 캐릭터 줄 수만큼만 허용하면 그리지 않는다.
+    const caption = used.model !== '' && e.props.maxRows > lines.length ? modelLine(used.model, used.effort) : ''
+    // 캐릭터 칸이 한 줄 커진 만큼 이름표 칸도 한 줄 띄운다. 목록이 짧아도 이름표가 캐릭터와 같은 줄에 머문다.
+    const spare = caption !== '' && list.length < lines.length ? 1 : 0
     const { Box, Text } = $.ui.resolve(e)
 
     return (
@@ -724,8 +750,9 @@ export const register: Register = (on, options) => {
               {line}
             </Text>
           ))}
+          {caption !== '' && <Text dimColor>{caption}</Text>}
         </Box>
-        <Box flexDirection="column" marginLeft={3}>
+        <Box flexDirection="column" marginLeft={3} marginBottom={spare}>
           <Box flexDirection="row">
             <Box flexShrink={0}>
               <Text bold dimColor={!busy} {...LABEL_STYLE[mine]}>
