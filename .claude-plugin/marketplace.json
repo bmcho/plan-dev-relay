@@ -7,7 +7,7 @@
       "name": "plan-dev-relay",
       "source": "./",
       "description": "기획/개발 두 Claude Code 세션을 짝지어 지시, 자동 보고, 로그, 역할별 애니메이션을 제공한다",
-      "version": "0.3.0"
+      "version": "0.4.0"
     }
   ]
 }
