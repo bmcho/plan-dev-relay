@@ -42,6 +42,7 @@ Claude Code 세션 두 개를 **기획 세션**과 **개발 세션**으로 짝�
 **안내문 (기획 모델이 받는 규칙)**
 
 - 구현과 수정은 직접 하지 않고 개발 세션에 지시한다.
+- 서브에이전트에게도 구현이나 수정을 맡기지 않는다. 서브에이전트는 찾기, 조사, 설계 비교, 검수 보조에만 쓴다.
 - 지시는 SendMessage로 보내고, `to`에는 `"dev-session"`을 쓴다.
 - 지시의 첫 줄에는 작업 제목을 쓰고, 이어서 목표, 대상 파일, 완료 조건을 적는다. 완료 조건은 검수할 수 있게 항목별로 적는다.
 - 개발 세션이 등록되지 않았으면 사용자에게 다른 세션에서 `/role dev`를 입력해 달라고 요청한다.
@@ -138,6 +139,12 @@ Claude Code 세션 두 개를 **기획 세션**과 **개발 세션**으로 짝�
   - 단계 기록은 안내문이라 강제되지 않습니다. 에이전트가 단계를 적지 않으면 릴레이 행만 보입니다.
 - **발신 표식**: 두 세션이 주고받는 메시지 첫 줄에 `[plan-dev-relay role=<역할> session=<세션 id>]` 표식을 붙입니다. 받는 쪽은 이 표식으로 짝의 메시지인지 확인하고, 표식은 지운 뒤 모델에 넘깁니다. 표식이 없거나 짝이 아닌 세션의 메시지는 mod가 건드리지 않습니다. 표식은 구별용이며 보안 장치가 아닙니다.
 - **짝 맺기**: repo마다 기획 하나, 개발 하나가 짝이 됩니다. 짝 정보는 `roles.json`에 저장되고, 같은 역할을 다른 세션이 등록하면 그 세션으로 바뀝니다.
+- **서브에이전트**: 모델이 Agent 도구로 띄우는 서브에이전트를 다룹니다.
+  - 안내문 (두 역할 공통): 찾기·조사는 Explore로 띄운다. 여러 파일 요약, 기계적 변환처럼 양이 많고 판단이 적은 일은 `model: "sonnet"`을 적는다. 설계, 구현, 검수처럼 판단이 필요한 일은 model을 비워 세션 모델을 쓴다. sonnet은 mod가 아니라 메인 모델이 이 기준으로 고르며, 강제되지 않습니다.
+  - 모델 기본값: 호출에 model이 없으면 Explore를 `haiku`로 띄웁니다. general-purpose 같은 다른 종류는 세션 모델이나 자기 정의를 따릅니다. 모델이 직접 고른 model은 그대로 둡니다. 별칭은 Claude Code가 그 버전이 아는 최신 모델로 바꿉니다. Claude Code를 업데이트하면 새로 띄운 세션부터 새 모델이 쓰입니다.
+  - 동시 상한: 메인 모델이 띄운 서브에이전트 중 일하는 것이 `maxAgents`개(기본 3개)면 새 에이전트를 띄우지 않고, 그 이유를 모델에게 돌려줍니다. 한 메시지로 여러 개를 띄워도 상한을 넘지 않습니다.
+  - effort: 서브에이전트가 모델에 요청할 때마다 모델에 맞는 effort를 줍니다. 기본값은 haiku `low`, sonnet `high`, opus `max`입니다. 설정에 적지 않은 모델(fable 등)과 메인 모델은 세션 설정을 따릅니다.
+  - 팀원, 워크플로 에이전트, 이어 하는 에이전트에는 모델 기본값과 상한을 적용하지 않습니다.
 
 ---
 
@@ -234,10 +241,12 @@ claude plugin marketplace remove plan-dev-relay
 | 설정 | 기본값 | 설명 |
 | --- | --- | --- |
 | `logRoot` (로그 폴더) | `~/Documents/claude/plan-dev-log` | 로그와 `roles.json`을 둘 폴더입니다. repo마다 하위 폴더가 생깁니다. `~`는 홈 폴더로 바뀝니다. |
+| `maxAgents` (서브에이전트 상한) | `3` | 기획·개발 세션에서 동시에 일하는 서브에이전트 수의 상한입니다. `0`이면 제한하지 않습니다. |
+| `subagentEffort` (서브에이전트 effort) | `haiku=low sonnet=high opus=max` | 서브에이전트가 모델별로 쓸 effort입니다. `모델=레벨` 쌍을 공백이나 쉼표로 나눠 한 줄에 적습니다. 모델은 haiku, sonnet, opus, fable, 레벨은 low, medium, high, xhigh, max입니다. 적지 않은 모델은 세션 설정을 따르고, 비워 두면 effort를 바꾸지 않습니다. |
 
-바꾸는 방법은 셋 중 하나입니다.
+바꾸는 방법은 셋 중 하나입니다. 바꾼 값은 mod를 다시 불러오면서 바로 적용됩니다.
 
-- Claude Code의 `/plugin` 메뉴에서 plan-dev-relay를 골라 `로그 폴더`를 바꿉니다.
+- Claude Code의 `/config`나 `/plugin` 메뉴에서 plan-dev-relay의 항목을 바꿉니다.
 - 설치할 때 지정합니다.
 
   ```
@@ -248,6 +257,7 @@ claude plugin marketplace remove plan-dev-relay
 
   ```
   echo '{"logRoot":"/원하는/경로"}' | claude plugin configure plan-dev-relay@plan-dev-relay --values-stdin
+  echo '{"maxAgents":2,"subagentEffort":"haiku=low sonnet=medium opus=max"}' | claude plugin configure plan-dev-relay@plan-dev-relay --values-stdin
   ```
 
 `claude plugin configure plan-dev-relay@plan-dev-relay`를 옵션 없이 실행하면 현재 설정을 볼 수 있습니다.
@@ -446,6 +456,8 @@ To-Do 공유 파일은 각 세션이 자기 몫만 2초마다 덮어씁니다. T
 | "roles.json이 깨져서…" 메시지가 보인다 | 짝 정보 파일이 손상되었습니다. 빈 짝 정보로 계속 동작하며, 양쪽에서 `/role`을 다시 입력하면 새로 써집니다. |
 | To-Do 목록이 보이지 않는다 | 에이전트가 TaskCreate·TaskUpdate(또는 TodoWrite)로 단계를 적지 않았습니다. 안내문은 강제가 아니므로 "단계를 TaskCreate로 적어 줘"라고 요청하세요. 릴레이 행은 지시를 보내면 나타납니다. |
 | 상대 세션의 목록이 보이지 않거나 늦게 바뀐다 | 목록은 2초마다 공유 파일로 주고받아 최대 약 4초 늦습니다. 두 세션이 같은 repo에서 `/role`을 입력했는지, `logRoot`에 쓰기 권한이 있는지 확인하세요. |
+| 서브에이전트가 "상한 N개에 닿았습니다" 오류로 뜨지 않는다 | 메인 모델이 띄운 서브에이전트 중 일하는 것이 `maxAgents`개입니다. 하나가 끝나면 다시 띄울 수 있습니다. 더 띄우려면 설정에서 `maxAgents`를 늘리거나 `0`으로 바꾸세요. |
+| "서브에이전트 effort 설정에서 무시한 값" 알림이 뜬다 | `subagentEffort`에 알아보지 못한 쌍이 있습니다. 알아본 쌍은 그대로 적용됩니다. 형식은 `haiku=low sonnet=high opus=max`이고, 레벨은 low, medium, high, xhigh, max입니다. |
 | 개발 단계가 기획 화면의 릴레이 행 아래에 나오지 않는다 | 기획 세션이 그 지시를 알아보지 못했습니다. 기획 세션을 새로 띄운 뒤 아직 지시를 보내지 않았거나, 개발 세션의 보고를 한 번도 받기 전에 개발 세션 이름으로 지시를 보낸 경우입니다. 다음 지시부터 나옵니다. |
 
 ---
@@ -467,12 +479,12 @@ To-Do 공유 파일은 각 세션이 자기 몫만 2초마다 덮어씁니다. T
 ```
 plan-dev-relay/
 ├── .claude-plugin/
-│   ├── plugin.json        # 플러그인 정보, userConfig(logRoot)
+│   ├── plugin.json        # 플러그인 정보, userConfig(logRoot, maxAgents, subagentEffort)
 │   └── marketplace.json   # 이 저장소를 마켓플레이스로 쓰기 위한 목록 ("./")
 ├── hooks/
 │   ├── hooks.json         # hook 모듈 지정 (register.tsx)
 │   ├── register.tsx       # 모든 hook과 $를 쓰는 입출력 함수
-│   ├── core.ts            # 순수 함수: 경로, 시각, 표식, 보고, 안내문
+│   ├── core.ts            # 순수 함수: 경로, 시각, 표식, 보고, 안내문, 서브에이전트 설정
 │   ├── todo.ts            # 순수 함수: To-Do 반영, 릴레이 행, 공유 파일, 목록 줄
 │   ├── art.ts             # 순수 함수: 캐릭터 프레임과 이름표 색
 │   ├── core.test.ts       # core.ts, art.ts 테스트
