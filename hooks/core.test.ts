@@ -2,14 +2,18 @@ import { expect, test } from 'claude-code/testing'
 
 import { artFor } from './art'
 import {
+  agentCap,
   buildReport,
   dayStamp,
+  defaultModel,
   devGuide,
+  effortFor,
   entry,
   envelopeNames,
   expandHome,
   firstLine,
   logPath,
+  parseEffort,
   parseRelayArgs,
   parseRoles,
   rolesPath,
@@ -293,4 +297,56 @@ test('envelopeNames reads the sender address and name from the engine wrapper', 
 test('both role guides ask the agent to keep its steps with the task tools', () => {
   expect(planGuide()).toContain('TaskCreate·TaskUpdate(없으면 TodoWrite)')
   expect(devGuide()).toContain('TaskCreate·TaskUpdate(없으면 TodoWrite)')
+})
+
+test('both role guides tell the agent which model to give each kind of subagent work', () => {
+  for (const guide of [planGuide(), devGuide()]) {
+    expect(guide).toContain('찾기·조사는 Explore로 띄운다')
+    expect(guide).toContain('양이 많고 판단이 적은 일은 `model: "sonnet"`을 적는다')
+    expect(guide).toContain('판단이 필요한 일은 model을 비워 세션 모델을 쓴다')
+  }
+})
+
+test('only the plan guide keeps implementation away from subagents', () => {
+  expect(planGuide()).toContain('서브에이전트에게도 구현이나 수정을 맡기지 않는다')
+  expect(devGuide()).not.toContain('서브에이전트에게도 구현이나 수정을 맡기지 않는다')
+})
+
+test('parseEffort reads model=level pairs split by spaces or commas', () => {
+  expect(parseEffort('haiku=low sonnet=high opus=max')).toEqual({
+    levels: { haiku: 'low', sonnet: 'high', opus: 'max' },
+    bad: [],
+  })
+  expect(parseEffort(' Fable=XHIGH,haiku=medium ')).toEqual({ levels: { fable: 'xhigh', haiku: 'medium' }, bad: [] })
+  expect(parseEffort('')).toEqual({ levels: {}, bad: [] })
+})
+
+test('parseEffort keeps the pairs it knows and lists the rest', () => {
+  expect(parseEffort('haiku=lo sonnet=high gpt=max opus')).toEqual({
+    levels: { sonnet: 'high' },
+    bad: ['haiku=lo', 'gpt=max', 'opus'],
+  })
+})
+
+test('effortFor picks the level by the model family in the id', () => {
+  const levels = { haiku: 'low', sonnet: 'high', opus: 'max' } as const
+  expect(effortFor('claude-haiku-5-5', levels)).toBe('low')
+  expect(effortFor('claude-haiku-4-5-20251001', levels)).toBe('low')
+  expect(effortFor('claude-sonnet-5-5[1m]', levels)).toBe('high')
+  expect(effortFor('claude-opus-5-5', levels)).toBe('max')
+  expect(effortFor('claude-fable-5-1', levels)).toBeUndefined()
+})
+
+test('agentCap takes a whole number from 0 and falls back to 3 otherwise', () => {
+  expect(agentCap(5)).toBe(5)
+  expect(agentCap(0)).toBe(0)
+  expect(agentCap(-1)).toBe(3)
+  expect(agentCap(2.5)).toBe(3)
+  expect(agentCap(undefined)).toBe(3)
+})
+
+test('defaultModel fills only Explore and leaves other types to the session model', () => {
+  expect(defaultModel('Explore')).toBe('haiku')
+  expect(defaultModel('general-purpose')).toBeUndefined()
+  expect(defaultModel('Plan')).toBeUndefined()
 })

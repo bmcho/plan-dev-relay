@@ -1,8 +1,46 @@
+import type { ModelEffort } from 'claude-code'
+
 import type { CommandRun, Review, Role, Task } from '../types'
 
 // userConfig.logRoot의 기본값. ~는 각자의 홈 폴더로 바뀐다.
 export const DEFAULT_LOG_ROOT = '~/Documents/claude/plan-dev-log'
 export const REPORT_LIMIT = 8000
+
+// userConfig.maxAgents와 userConfig.subagentEffort의 기본값
+export const DEFAULT_MAX_AGENTS = 3
+export const DEFAULT_EFFORT = 'haiku=low sonnet=high opus=max'
+
+const FAMILIES = ['haiku', 'sonnet', 'opus', 'fable'] as const
+const LEVELS: readonly string[] = ['low', 'medium', 'high', 'xhigh', 'max'] satisfies ModelEffort[]
+
+export type EffortLevels = Partial<Record<(typeof FAMILIES)[number], ModelEffort>>
+
+// "haiku=low sonnet=high"처럼 공백이나 쉼표로 나눈 모델=레벨 쌍을 읽는다. 알아보지 못한 쌍은 bad에 남긴다.
+export const parseEffort = (text: string) => {
+  const levels: EffortLevels = {}
+  const bad: string[] = []
+  for (const pair of text.split(/[\s,]+/).filter(Boolean)) {
+    const [name = '', level = '', ...rest] = pair.toLowerCase().split('=')
+    const family = FAMILIES.find(known => known === name)
+    if (family !== undefined && LEVELS.includes(level) && rest.length === 0) levels[family] = level as ModelEffort
+    else bad.push(pair)
+  }
+  return { levels, bad }
+}
+
+// 모델 id에 든 이름으로 레벨을 고른다. 새 버전의 id에도 그대로 맞는다.
+export const effortFor = (model: string, levels: EffortLevels) => {
+  const family = FAMILIES.find(name => model.includes(name))
+  return family === undefined ? undefined : levels[family]
+}
+
+// 0이면 제한하지 않는다. 0 이상의 정수가 아니면 기본값을 쓴다.
+export const agentCap = (value: unknown) =>
+  typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : DEFAULT_MAX_AGENTS
+
+// 호출이 model을 비운 Explore는 haiku 별칭으로 띄운다. 별칭은 Claude Code가 최신 모델로 바꾼다.
+// 다른 종류는 세션 모델이나 자기 정의를 따른다. sonnet은 메인이 안내문 기준으로 직접 고른다.
+export const defaultModel = (subagentType: string) => (subagentType === 'Explore' ? 'haiku' : undefined)
 
 const KST_MS = 9 * 60 * 60 * 1000
 
@@ -117,16 +155,24 @@ export const buildReport = (
 // SendMessage는 세션 id를 주소로 받지 않는다. 모델은 이 별칭으로 보내고 mod가 개발 세션으로 전달한다.
 export const DEV_ALIAS = 'dev-session'
 
+// 두 역할 모두 서브에이전트를 띄운다. 모델 기본값과 상한은 mod가 agent.spawn에서 적용한다.
+const SUBAGENTS = [
+  '서브에이전트 model 기준: 찾기·조사는 Explore로 띄운다(mod가 haiku로 띄운다). 여러 파일 요약, 기계적 변환처럼 양이 많고 판단이 적은 일은 `model: "sonnet"`을 적는다. 설계, 구현, 검수처럼 판단이 필요한 일은 model을 비워 세션 모델을 쓴다.',
+  '동시에 일하는 서브에이전트가 상한에 닿으면 mod가 새 에이전트를 거절한다. 그때는 일하는 에이전트가 끝난 뒤 다시 띄우거나 직접 한다.',
+]
+
 export const planGuide = () =>
   [
     '# plan-dev-relay: 기획 역할',
     '이 세션은 기획 담당이다. 구현과 수정은 직접 하지 말고 개발 세션에 지시한다.',
+    '서브에이전트에게도 구현이나 수정을 맡기지 않는다. 서브에이전트는 찾기, 조사, 설계 비교, 검수 보조에만 쓴다.',
     `지시는 SendMessage로 보내고, to에는 "${DEV_ALIAS}"를 쓴다. mod가 등록된 개발 세션으로 전달한다.`,
     'SendMessage가 지연 로드 도구이면 ToolSearch로 먼저 불러온다.',
     '개발 세션이 등록되지 않았으면 mod가 이유와 함께 거절한다. 그때는 사용자에게 다른 세션에서 `/role dev` 입력을 요청한다.',
     '지시에는 첫 줄에 작업 제목, 이어서 목표, 대상 파일, 완료 조건을 적는다. 완료 조건은 검수할 수 있게 항목별로 적는다.',
     '개발 세션의 보고가 오면 mod가 검수를 요청한다. 검수 때는 파일 읽기, git diff, 테스트 실행을 직접 한다. 보고를 기다리며 폴링하지 않는다.',
     '계획 단계도 TaskCreate·TaskUpdate(없으면 TodoWrite)로 적고 진행에 맞춰 상태를 바꾼다. 이 목록은 개발 세션 화면에도 보인다.',
+    ...SUBAGENTS,
   ].join('\n')
 
 export const DEFAULT_REVIEW_ROUNDS = 3
@@ -266,4 +312,5 @@ export const devGuide = () =>
     '작업이 끝나면 결과가 기획 세션에 자동으로 보고된다. SendMessage로 기획 세션에 따로 답하지 않는다.',
     '마지막 답변에는 무엇을 바꿨는지, 테스트 결과, 남은 문제를 적는다.',
     '단계가 여럿인 지시는 TaskCreate·TaskUpdate(없으면 TodoWrite)로 단계를 적고 진행에 맞춰 상태를 바꾼다. 이 목록은 기획 세션 화면에도 보인다.',
+    ...SUBAGENTS,
   ].join('\n')

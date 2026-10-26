@@ -11,19 +11,24 @@ import type {
 import type { CommandRun, Review, Role, Task, TodoShare } from '../types'
 import { artFor, LABEL_STYLE, ORANGE } from './art'
 import {
+  agentCap,
   baseName,
   buildReport,
   dayStamp,
+  DEFAULT_EFFORT,
   DEFAULT_LOG_ROOT,
   DEFAULT_REVIEW_ROUNDS,
+  defaultModel,
   DEV_ALIAS,
   devGuide,
+  effortFor,
   entry,
   envelopeNames,
   expandHome,
   firstLine,
   logPath,
   MODE_LABEL,
+  parseEffort,
   parseRelayArgs,
   parseRoles,
   parseStop,
@@ -372,6 +377,12 @@ export const register: Register = (on, options) => {
   let isMainTurn = false
   // 2초마다 내 To-Do 몫을 쓰고 상대 몫을 읽는다. hot reload 뒤에는 session.start에서 다시 켠다.
   let poll: Timer | undefined
+  // 설정을 바꾸면 mod가 새 options로 다시 불려진다.
+  const cap = agentCap(options.maxAgents)
+  const efforts = parseEffort(typeof options.subagentEffort === 'string' ? options.subagentEffort : DEFAULT_EFFORT)
+  // 한 메시지의 여러 Agent 호출은 spawn이 함께 돈다. 함께 읽은 목록은 서로의 에이전트를 세지 못하므로,
+  // 앞 spawn의 에이전트가 목록에 오른 뒤에 다음 spawn을 세도록 하나씩 확인한다.
+  let spawning: Promise<unknown> = Promise.resolve()
 
   const stopFrames = () => {
     timer?.cancel()
@@ -392,6 +403,9 @@ export const register: Register = (on, options) => {
     if ((await read($, role)) !== null) {
       poll?.cancel()
       poll = syncTimer($)
+    }
+    if (efforts.bad.length > 0) {
+      await $.ui.toast(`서브에이전트 effort 설정에서 무시한 값: ${efforts.bad.join(', ')} (형식: ${DEFAULT_EFFORT})`)
     }
     return next(e)
   })
@@ -618,6 +632,37 @@ export const register: Register = (on, options) => {
       await log($, `[개발] 명령 ${isOk ? '성공' : '실패'}`, `\`${e.command}\``)
     }
     return ran
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    // 메인 loop가 새로 띄우는 서브에이전트만 다룬다. 팀원, 워크플로 에이전트, 이어 하기는 그대로 둔다.
+    const isNew =
+      e.parentAgentId === undefined && e.isTeammate === undefined && e.workflow === undefined && e.resume === undefined
+    if (!isNew || (await read($, role)) === null) return next(e)
+
+    // 호출이 model을 비운 엔진의 Explore는 haiku로 띄운다.
+    const model = e.model ?? (e.provider.plugin === 'engine' ? defaultModel(e.subagentType) : undefined)
+    const spawn = model === e.model ? e : { ...e, model }
+    if (cap === 0) return next(spawn)
+    const started = spawning.then(async () => {
+      // 앞 spawn을 기다리는 동안 이 호출이 버려졌으면(사용자 중단, 시간 초과) 띄우지 않는다.
+      if (next.signal.aborted) return { deny: '에이전트 호출이 중단되었습니다.' }
+      if ((await refreshAgents($)).length < cap) return next(spawn)
+      return {
+        deny: `동시에 일하는 서브에이전트가 상한 ${cap}개에 닿았습니다. 일하는 에이전트가 끝난 뒤 다시 띄우거나 직접 하세요.`,
+      }
+    })
+    spawning = started.catch(() => undefined)
+    return started
+  })
+
+  // 서브에이전트의 모델 요청마다 모델에 맞는 effort를 준다. 메인 loop와 effort가 없는 모델은 그대로 둔다.
+  on('turn.step', async function* ($, e, next) {
+    const level =
+      e.agentId === undefined || e.effort === undefined || (await read($, role)) === null
+        ? undefined
+        : effortFor(e.model, efforts.levels)
+    return yield* next(level === undefined ? e : { ...e, effort: level })
   })
 
   on('turn.start', async ($, e, next) => {

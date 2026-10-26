@@ -1323,3 +1323,174 @@ test('band keeps the character and the label at their width next to a long list 
   expect(label?.props?.flexShrink).toBe(0)
   await band.unmount()
 })
+
+// 서브에이전트 정책: 모델 기본값, 동시 상한, effort
+// 엔진처럼 띄운 에이전트를 목록에 일하는 중으로 올리고, 받은 spawn을 남긴다.
+const spawner = (on: On, world: World) => {
+  const spawned: { subagentType: string; model?: string }[] = []
+  on('agent.spawn', ($, e) => {
+    const id = `A${spawned.length + 1}`
+    spawned.push({ subagentType: e.subagentType, model: e.model })
+    world.agents = [...(world.agents ?? []), agent(id, 'running')]
+    return { model: e.model ?? 'inherit', agentId: id }
+  })
+  return spawned
+}
+
+const spawn = ($: Engine, subagentType: string, more: Record<string, unknown> = {}) =>
+  $.agent.spawn({
+    tool_use_id: 'toolu_1',
+    prompt: '조사해 줘',
+    description: '조사',
+    subagentType,
+    provider: { plugin: 'engine', tier: 'core' },
+    parentModel: 'claude-opus-5-5',
+    background: true,
+    fork: false,
+    ...more,
+  } as never)
+
+test('a relay session gives Explore haiku and leaves general-purpose to the session model', async ($, on) => {
+  const world = newWorld()
+  const spawned = spawner(on, world)
+  await planWithDev($, on, world)
+
+  await spawn($, 'Explore')
+  await spawn($, 'general-purpose')
+
+  expect(spawned).toEqual([
+    { subagentType: 'Explore', model: 'haiku' },
+    { subagentType: 'general-purpose', model: undefined },
+  ])
+})
+
+test('a relay session keeps the model the call names and leaves other agent types alone', async ($, on) => {
+  const world = newWorld()
+  const spawned = spawner(on, world)
+  await planWithDev($, on, world)
+
+  await spawn($, 'Explore', { model: 'opus' })
+  await spawn($, 'Plan')
+  await spawn($, 'fork', { fork: true })
+
+  expect(spawned.map(s => s.model)).toEqual(['opus', undefined, undefined])
+})
+
+test('a session without a role spawns agents as asked, with no cap', async ($, on) => {
+  const world = newWorld()
+  engine(on, 'S-X', world)
+  world.agents = ['A7', 'A8', 'A9'].map(id => agent(id, 'running'))
+  const spawned = spawner(on, world)
+
+  const started = await spawn($, 'Explore')
+
+  expect(started.deny).toBeUndefined()
+  expect(spawned).toEqual([{ subagentType: 'Explore', model: undefined }])
+})
+
+test('a relay session refuses a new agent while maxAgents agents work and tells the main loop why', async ($, on) => {
+  const world = newWorld()
+  const spawned = spawner(on, world)
+  await planWithDev($, on, world)
+  world.agents = ['A7', 'A8', 'A9'].map(id => agent(id, 'running'))
+
+  const refused = await spawn($, 'Explore')
+
+  expect(refused.deny).toContain('3개')
+  expect(spawned).toHaveLength(0)
+
+  // 하나가 끝나면 다시 띄울 수 있다.
+  world.agents = ['A8', 'A9'].map(id => agent(id, 'running'))
+  expect((await spawn($, 'Explore')).deny).toBeUndefined()
+})
+
+test('maxAgents 0 lifts the cap', { options: { maxAgents: 0 } }, async ($, on) => {
+  const world = newWorld()
+  const spawned = spawner(on, world)
+  await planWithDev($, on, world)
+  world.agents = ['A6', 'A7', 'A8', 'A9'].map(id => agent(id, 'running'))
+
+  expect((await spawn($, 'Explore')).deny).toBeUndefined()
+  expect(spawned).toHaveLength(1)
+})
+
+test('agents spawned at once count toward the cap before they start', async ($, on) => {
+  const world = newWorld()
+  const spawned = spawner(on, world)
+  await planWithDev($, on, world)
+
+  const results = await Promise.all([1, 2, 3, 4].map(() => spawn($, 'Explore')))
+
+  expect(results.filter(r => r.deny !== undefined)).toHaveLength(1)
+  expect(spawned).toHaveLength(3)
+})
+
+// 모델 요청의 effort를 남기고 빈 응답으로 끝낸다.
+const stepper = (on: On) => {
+  const efforts: unknown[] = []
+  on('turn.step', async function* ($, e) {
+    efforts.push(e.effort)
+    return { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn', usage: null } as never
+  })
+  return efforts
+}
+
+const step = async ($: Engine, model: string, effort: string | undefined, agentId?: string) => {
+  const stream = $.turn.step({ turnId: 'T1', index: 0, model, effort, messageCount: 1, agentId } as never)
+  for await (const chunk of stream) void chunk
+  return stream.result
+}
+
+test('a relay session sets each subagent step effort by its model', async ($, on) => {
+  const world = newWorld()
+  const efforts = stepper(on)
+  await planWithDev($, on, world)
+
+  await step($, 'claude-haiku-5-5', 'max', 'A1')
+  await step($, 'claude-sonnet-5-5', 'max', 'A2')
+  await step($, 'claude-opus-5-5', 'medium', 'A3')
+  await step($, 'claude-fable-5-1', 'medium', 'A4')
+
+  expect(efforts).toEqual(['low', 'high', 'max', 'medium'])
+})
+
+test('main loop steps, sessions without a role and models without effort keep their effort', async ($, on) => {
+  const world = newWorld()
+  engine(on, 'S-X', world)
+  const efforts = stepper(on)
+
+  await step($, 'claude-haiku-5-5', 'max', 'A1')
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+  await step($, 'claude-haiku-5-5', 'max')
+  await step($, 'claude-haiku-5-5', undefined, 'A1')
+
+  expect(efforts).toEqual(['max', 'max', undefined])
+})
+
+test(
+  'the subagentEffort option sets the levels, and an unlisted model keeps its effort',
+  { options: { subagentEffort: 'haiku=medium' } },
+  async ($, on) => {
+    const world = newWorld()
+    const efforts = stepper(on)
+    await planWithDev($, on, world)
+
+    await step($, 'claude-haiku-5-5', 'max', 'A1')
+    await step($, 'claude-sonnet-5-5', 'max', 'A2')
+
+    expect(efforts).toEqual(['medium', 'max'])
+  },
+)
+
+test(
+  'a subagentEffort option with unknown pairs is reported when the session starts',
+  { options: { subagentEffort: 'haiku=lo sonnet=high' } },
+  async ($, on) => {
+    const world = newWorld()
+    engine(on, 'S-X', world)
+
+    await $.session.start({ cwd: '/Users/bmcho/Documents/git/control-center', surface: 'terminal', isInteractive: true } as never)
+
+    expect(world.toasts.join('\n')).toContain('haiku=lo')
+  },
+)
