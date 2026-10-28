@@ -1,6 +1,6 @@
 {
   "name": "plan-dev-relay",
-  "version": "0.4.2",
+  "version": "0.5.0",
   "description": "기획/개발 두 Claude Code 세션을 짝지어 지시, 자동 보고, 로그, 역할별 애니메이션을 제공한다",
   "author": { "name": "조병민", "email": "byeongmin.cho@ahha.ai" },
   "types": "./types/index.d.ts",
