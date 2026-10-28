@@ -52,6 +52,12 @@ export const relayOnVerdict = (rows: RelayItem[], verdict: '통과' | '반려'):
   return rows.map((row): RelayItem => (row.status === 'reviewing' ? { ...row, status } : row))
 }
 
+// 기획이 모두 끝났는지: 단계가 모두 완료되고 릴레이 행이 모두 통과했다. 둘 다 비었으면 끝낼 것이 없다.
+export const isAllDone = (todos: AgentTodo[], rows: RelayItem[]) =>
+  todos.length + rows.length > 0 &&
+  todos.every(todo => todo.status === 'completed') &&
+  rows.every(row => row.status === 'passed')
+
 const TODO_STATUS = new Set(['pending', 'in_progress', 'completed'])
 const RELAY_STATUS = new Set(['working', 'reviewing', 'passed', 'rejected'])
 

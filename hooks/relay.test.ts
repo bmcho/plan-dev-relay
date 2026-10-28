@@ -1114,14 +1114,32 @@ test('plan shares its relay rows as the instruction is sent, reported and judged
   await clock.advance(2000)
   expect(shared(world, TODO_PLAN).relay).toEqual([{ title: '경로 API 추가', status: 'reviewing' }])
 
+  await inspectionTurn($, received.text ?? '', '[검수 보고] 경로 API 추가\n검수 결과: 반려')
+  await clock.advance(2000)
+  expect(shared(world, TODO_PLAN).relay).toEqual([{ title: '경로 API 추가', status: 'rejected' }])
+})
+
+test('plan clears its To-Do and relay rows when the turn ends with every step done and every row passed', async ($, on) => {
+  const world = newWorld()
+  const clock = await planWithDev($, on, world)
+  await $.tool.call({ tool: 'TaskCreate', subject: '계획 작성', description: 'd' } as never)
+  await $.tool.call({ tool: 'TaskUpdate', taskId: '1', status: 'completed' } as never)
+  await $.session.send({ to: 'dev-session', text: '경로 API 추가', origin: { kind: 'model' } })
+
+  // 단계는 끝났어도 지시가 아직 일하는 중이면 남긴다.
+  await ordinaryTurn($, '지시했습니다.')
+  await clock.advance(2000)
+  expect(shared(world, TODO_PLAN).todos).toHaveLength(1)
+  expect(shared(world, TODO_PLAN).relay).toEqual([{ title: '경로 API 추가', status: 'working' }])
+
+  // 통과 판정이 난 turn이 끝나면 모두 비운다. 상대 화면도 공유 파일로 비워진다.
+  const received = await $.session.receive(report('[개발 보고] 경로 API 추가'))
   await inspectionTurn($, received.text ?? '', '[검수 보고] 경로 API 추가\n검수 결과: 통과')
   await clock.advance(2000)
-  expect(shared(world, TODO_PLAN)).toEqual({
-    sessionId: 'S-PLAN',
-    todos: [],
-    relay: [{ title: '경로 API 추가', status: 'passed' }],
-    todoFor: null,
-  })
+  expect(shared(world, TODO_PLAN)).toEqual({ sessionId: 'S-PLAN', todos: [], relay: [], todoFor: null })
+  const band = await mountBand($)
+  expect(await band.find({ type: 'Text', text: /To-Do/ })).toBeUndefined()
+  await band.unmount()
 })
 
 test('plan keeps a row in review without a verdict and adds no row for a refused instruction', async ($, on) => {
@@ -1632,4 +1650,55 @@ test('a Windows host keeps the role and the log under USERPROFILE without /bin/s
   expect(log.indexOf('[개발] 역할 등록')).toBeGreaterThan(0)
   expect(log.indexOf('[개발] 직접 입력')).toBeGreaterThan(log.indexOf('[개발] 역할 등록'))
   expect(world.uiLogs).toEqual([])
+})
+
+// $.config.set이 받은 설정을 남긴다. deny를 주면 거절한다.
+const configs = (on: On, deny?: string) => {
+  const sets: { key: string; value: unknown }[] = []
+  on('config.set', ($, e) => {
+    if (deny !== undefined) return { deny }
+    sets.push({ key: e.key, value: e.value })
+    return { value: e.value }
+  })
+  return sets
+}
+
+test('/subagents shows the cap and saves a new one in the plugin settings', { options: { maxAgents: 3 } }, async ($, on) => {
+  const world = newWorld()
+  engine(on, 'S-X', world)
+  const sets = configs(on)
+
+  expect((await $.command.run({ command: 'subagents', args: '' } as never)).text).toContain('서브에이전트 상한: 3개')
+  expect((await $.command.run({ command: 'subagents', args: '5' } as never)).text).toBe('서브에이전트 상한을 5개로 바꿨습니다.')
+  expect((await $.command.run({ command: 'subagents', args: '0' } as never)).text).toBe('서브에이전트 상한을 없앴습니다.')
+  expect((await $.command.run({ command: 'subagents', args: 'many' } as never)).text).toContain('사용법: /subagents')
+  expect(sets).toEqual([
+    { key: 'plan-dev-relay.maxAgents', value: 5 },
+    { key: 'plan-dev-relay.maxAgents', value: 0 },
+  ])
+})
+
+test('/agentEffort shows the levels and changes one model, keeping the others', async ($, on) => {
+  const world = newWorld()
+  engine(on, 'S-X', world)
+  const sets = configs(on)
+
+  expect((await $.command.run({ command: 'agentEffort', args: '' } as never)).text).toContain(
+    '서브에이전트 effort: haiku=low sonnet=high opus=max',
+  )
+  expect((await $.command.run({ command: 'agentEffort', args: 'sonnet m' } as never)).text).toBe(
+    '서브에이전트 effort를 haiku=low sonnet=medium opus=max로 바꿨습니다.',
+  )
+  expect((await $.command.run({ command: 'agentEffort', args: 'gpt max' } as never)).text).toContain('사용법: /agentEffort')
+  expect(sets).toEqual([{ key: 'plan-dev-relay.subagentEffort', value: 'haiku=low sonnet=medium opus=max' }])
+})
+
+test('the setting commands say so when the settings refuse the change', async ($, on) => {
+  const world = newWorld()
+  engine(on, 'S-X', world)
+  configs(on, '관리 설정이 정한 값입니다')
+
+  const refused = await $.command.run({ command: 'subagents', args: '5' } as never)
+
+  expect(refused.text).toBe('설정을 바꾸지 못했습니다: 관리 설정이 정한 값입니다')
 })

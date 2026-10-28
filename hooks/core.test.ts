@@ -9,12 +9,15 @@ import {
   defaultModel,
   devGuide,
   effortFor,
+  effortText,
   entry,
   envelopeNames,
   expandHome,
   firstLine,
   logPath,
   modelLine,
+  parseAgentEffort,
+  parseCap,
   parseEffort,
   parseRelayArgs,
   parseRoles,
@@ -350,6 +353,30 @@ test('modelLine drops the claude- prefix and adds the effort only when the model
   expect(modelLine('claude-sonnet-5-5[1m]', 'high')).toBe('sonnet-5-5[1m] · high')
   expect(modelLine('claude-haiku-5-5', undefined)).toBe('haiku-5-5')
   expect(modelLine('claude-fable-5-1', 12000)).toBe('fable-5-1 · 12000')
+})
+
+test('parseCap takes a whole number from 0 only', () => {
+  expect(parseCap('5')).toBe(5)
+  expect(parseCap('0')).toBe(0)
+  expect(parseCap('-1')).toBeNull()
+  expect(parseCap('2.5')).toBeNull()
+  expect(parseCap('many')).toBeNull()
+})
+
+test('parseAgentEffort reads one model and one level, and effortText writes the levels back in model order', () => {
+  expect(parseAgentEffort('sonnet medium')).toEqual({ sonnet: 'medium' })
+  expect(parseAgentEffort('haiku l')).toEqual({ haiku: 'low' })
+  expect(parseAgentEffort('sonnet m')).toEqual({ sonnet: 'medium' })
+  expect(parseAgentEffort('opus h')).toEqual({ opus: 'high' })
+  expect(parseAgentEffort('opus XH')).toEqual({ opus: 'xhigh' })
+  expect(parseAgentEffort('fable max')).toEqual({ fable: 'max' })
+  expect(parseAgentEffort('sonnet x')).toBeNull()
+  expect(parseAgentEffort(' Fable  XHIGH ')).toEqual({ fable: 'xhigh' })
+  expect(parseAgentEffort('gpt max')).toBeNull()
+  expect(parseAgentEffort('sonnet')).toBeNull()
+  expect(parseAgentEffort('sonnet high max')).toBeNull()
+  expect(effortText({ fable: 'xhigh', haiku: 'low', opus: 'max' })).toBe('haiku=low opus=max fable=xhigh')
+  expect(effortText({})).toBe('')
 })
 
 test('agentCap takes a whole number from 0 and falls back to 3 otherwise', () => {

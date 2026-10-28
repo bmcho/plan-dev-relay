@@ -38,6 +38,27 @@ export const effortFor = (model: string, levels: EffortLevels) => {
 export const modelLine = (model: string, effort?: string | number) =>
   `${model.replace(/^claude-/, '')}${effort === undefined ? '' : ` · ${effort}`}`
 
+// parseEffort의 반대: 설정에 저장할 한 줄. 모델 순서는 FAMILIES를 따른다.
+export const effortText = (levels: EffortLevels) =>
+  FAMILIES.flatMap(family => (levels[family] === undefined ? [] : [`${family}=${levels[family]}`])).join(' ')
+
+// /agentEffort에서 레벨을 짧게 쓰는 이름. 설정에는 전체 이름으로 저장한다.
+const SHORT_LEVELS: Record<string, string> = { l: 'low', m: 'medium', h: 'high', xh: 'xhigh' }
+
+// /agentEffort의 인자: 모델 하나와 레벨 하나. 레벨은 l, m, h, xh, max나 전체 이름이다.
+export const parseAgentEffort = (args: string) => {
+  const [model = '', level = '', ...rest] = args.trim().split(/\s+/)
+  if (rest.length > 0) return null
+  const { levels, bad } = parseEffort(`${model}=${SHORT_LEVELS[level.toLowerCase()] ?? level}`)
+  return bad.length === 0 ? levels : null
+}
+
+// /subagents의 인자. 0 이상의 정수만 받는다.
+export const parseCap = (arg: string) => (/^\d+$/.test(arg) ? Number(arg) : null)
+
+export const SUBAGENTS_USAGE = '사용법: /subagents [n] (n은 동시에 일하는 서브에이전트 상한, 0이면 제한 없음)'
+export const AGENT_EFFORT_USAGE = `사용법: /agentEffort [${FAMILIES.join(' | ')}] [l | m | h | xh | max] (low, medium, high, xhigh로 써도 된다)`
+
 // 0이면 제한하지 않는다. 0 이상의 정수가 아니면 기본값을 쓴다.
 export const agentCap = (value: unknown) =>
   typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : DEFAULT_MAX_AGENTS

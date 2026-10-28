@@ -5,6 +5,7 @@ import {
   applyTaskCreate,
   applyTaskUpdate,
   applyTodoWrite,
+  isAllDone,
   parseShare,
   relayOnReport,
   relayOnSend,
@@ -234,4 +235,16 @@ test('todoLines fits a smaller limit and draws nothing without room', () => {
   expect(lineTexts(todoLines(plan, null, 4))).toEqual(['기획 To-Do  완료 0/2', ' ☐ p1', ' ☐ p2', '릴레이 To-Do'])
   expect(todoLines(plan, null, 0)).toEqual([])
   expect(todoLines(plan, null, -1)).toEqual([])
+})
+
+test('isAllDone is true only when every step is completed and every relay row passed', () => {
+  const done: AgentTodo = { text: 'a', status: 'completed' }
+  const passed: RelayItem = { title: 'x', status: 'passed' }
+  expect(isAllDone([done], [passed])).toBe(true)
+  expect(isAllDone([done], [])).toBe(true)
+  expect(isAllDone([], [passed])).toBe(true)
+  expect(isAllDone([], [])).toBe(false)
+  expect(isAllDone([{ text: 'b', status: 'in_progress' }], [passed])).toBe(false)
+  expect(isAllDone([done], [{ title: 'x', status: 'rejected' }])).toBe(false)
+  expect(isAllDone([done], [{ title: 'x', status: 'reviewing' }])).toBe(false)
 })

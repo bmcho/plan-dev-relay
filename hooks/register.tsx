@@ -11,6 +11,7 @@ import type {
 import type { CommandRun, MainModel, Review, Role, Task, TodoShare } from '../types'
 import { artFor, LABEL_STYLE, ORANGE } from './art'
 import {
+  AGENT_EFFORT_USAGE,
   agentCap,
   baseName,
   buildReport,
@@ -22,6 +23,7 @@ import {
   DEV_ALIAS,
   devGuide,
   effortFor,
+  effortText,
   entry,
   envelopeNames,
   expandHome,
@@ -29,6 +31,8 @@ import {
   logPath,
   MODE_LABEL,
   modelLine,
+  parseAgentEffort,
+  parseCap,
   parseEffort,
   parseRelayArgs,
   parseRoles,
@@ -44,6 +48,7 @@ import {
   reviewStatus,
   roleLabel,
   rolesPath,
+  SUBAGENTS_USAGE,
   todoPath,
   unwrap,
   withTag,
@@ -54,6 +59,7 @@ import {
   applyTaskCreate,
   applyTaskUpdate,
   applyTodoWrite,
+  isAllDone,
   parseShare,
   relayOnReport,
   relayOnSend,
@@ -284,6 +290,12 @@ const sendSafely = async (
   }
 }
 
+// /config의 이 mod 설정 한 칸을 바꾼다. 바뀐 설정으로 mod가 다시 불려 두 세션 모두에 적용된다.
+const saveConfig = async ($: EngineInterface, field: string, value: number | string, done: string) => {
+  const saved = await $.config.set({ key: `${P}.${field}`, value })
+  return { text: saved.deny === undefined ? done : `설정을 바꾸지 못했습니다: ${saved.deny}` }
+}
+
 const ENDING: Partial<Record<TurnCompleteReason, string>> = {
   aborted: '(중단됨)',
   error: '(오류로 종료)',
@@ -416,6 +428,16 @@ export const register: Register = (on, options) => {
       name: 'relay',
       description: `plan-dev-relay 검수 뒤 진행 방식 (수동/오토/풀오토). ${RELAY_USAGE}`,
     })
+    await $.command.register({
+      name: 'subagents',
+      description: `plan-dev-relay 서브에이전트 동시 상한. ${SUBAGENTS_USAGE}`,
+      argumentHint: '[n]',
+    })
+    await $.command.register({
+      name: 'agentEffort',
+      description: `plan-dev-relay 서브에이전트의 모델별 effort. ${AGENT_EFFORT_USAGE}`,
+      argumentHint: '[model] [effort]',
+    })
     // 다시 불러오거나 이어 연 세션에 지난 에이전트 목록이 남지 않게 다시 센다.
     // 다시 불러오면 타이머가 사라지므로, 에이전트가 일하는 중이면 캐릭터를 다시 움직인다.
     const working = await refreshAgents($)
@@ -516,6 +538,27 @@ export const register: Register = (on, options) => {
     await log($, '[기획] 릴레이 모드 변경', reviewStatus(next))
     return { text: reviewStatus(next), context: [reviewGuide(next)] }
   })
+
+  // 설정을 못 바꾸면($.config.set이 거절하거나 실패하면) 이유를 보인다.
+  on('command.run', { command: 'subagents' }, async ($, e) => {
+    const arg = e.args.trim()
+    if (arg === '') return { text: `서브에이전트 상한: ${cap === 0 ? '없음' : `${cap}개`}. ${SUBAGENTS_USAGE}` }
+    const next = parseCap(arg)
+    if (next === null) return { text: SUBAGENTS_USAGE }
+    const done = next === 0 ? '서브에이전트 상한을 없앴습니다.' : `서브에이전트 상한을 ${next}개로 바꿨습니다.`
+    return saveConfig($, 'maxAgents', next, done)
+  }).catch(($, e, next) => ({ text: `설정을 바꾸지 못했습니다: ${next.error.message ?? next.error.kind}` }))
+
+  on('command.run', { command: 'agentEffort' }, async ($, e) => {
+    if (e.args.trim() === '') {
+      const current = effortText(efforts.levels) || '없음'
+      return { text: `서브에이전트 effort: ${current} (적지 않은 모델은 세션 effort를 따른다). ${AGENT_EFFORT_USAGE}` }
+    }
+    const pair = parseAgentEffort(e.args)
+    if (pair === null) return { text: AGENT_EFFORT_USAGE }
+    const next = effortText({ ...efforts.levels, ...pair })
+    return saveConfig($, 'subagentEffort', next, `서브에이전트 effort를 ${next}로 바꿨습니다.`)
+  }).catch(($, e, next) => ({ text: `설정을 바꾸지 못했습니다: ${next.error.message ?? next.error.kind}` }))
 
   on('session.receive', async ($, e, next) => {
     const mine = await read($, role)
@@ -726,6 +769,11 @@ export const register: Register = (on, options) => {
     const hasVerdict = parseVerdict(e.answer) !== null
     if (mine === 'plan' && (hasVerdict || ((await read($, reviewing)) && !waits))) {
       await finishReview($, e.answer, e.reason)
+    }
+    // 기획이 모두 끝났으면(단계가 모두 완료, 릴레이 행이 모두 통과) 목록을 비운다. 개발 화면도 공유 파일로 비워진다.
+    if (mine === 'plan' && !waits && isAllDone(await read($, todos), await read($, relay))) {
+      await update($, todos, () => [])
+      await update($, relay, () => [])
     }
     return result
   })
