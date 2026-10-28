@@ -479,6 +479,14 @@ export const register: Register = (on, options) => {
       context: [next === 'plan' ? planGuide() : devGuide()],
     }
   })
+    // 실패하면 엔진은 "registered /role but no command.run hook answered it"만 보이고 이유는 debug 로그에만 남는다.
+    // 데스크톱 앱처럼 터미널과 권한이 다른 곳에서는 logRoot 쓰기가 막힐 수 있어, 이유와 확인할 곳을 보인다.
+    .catch(($, e, next) => {
+      const reason = next.error.kind === 'timeout' ? '시간 초과' : (next.error.message ?? '알 수 없는 오류')
+      return {
+        text: `역할 명령 실패 (${reason}). 로그 폴더(설정의 logRoot)에 쓸 수 있는지 확인하세요. 데스크톱 앱은 문서 폴더 접근을 따로 허용해야 할 수 있습니다.`,
+      }
+    })
 
   on('command.run', { command: 'relay' }, async ($, e) => {
     const parsed = parseRelayArgs(e.args)
@@ -740,17 +748,23 @@ export const register: Register = (on, options) => {
     const caption = used.model !== '' && e.props.maxRows > lines.length ? modelLine(used.model, used.effort) : ''
     // 캐릭터 칸이 한 줄 커진 만큼 이름표 칸도 한 줄 띄운다. 목록이 짧아도 이름표가 캐릭터와 같은 줄에 머문다.
     const spare = caption !== '' && list.length < lines.length ? 1 : 0
+    // 데스크톱은 Text를 비례 글꼴로 그린다. 캐릭터와 모델 줄은 고정폭(mono)으로 그려야 줄이 맞고, 모델 줄은 작은 글자(caption)로 그린다.
+    // 터미널은 mono와 size를 무시한다.
     const { Box, Text } = $.ui.resolve(e)
 
     return (
       <Box flexDirection="row" alignItems="center">
         <Box flexDirection="column" flexShrink={0}>
           {lines.map(line => (
-            <Text color={ORANGE} dimColor={!busy}>
+            <Text color={ORANGE} dimColor={!busy} mono>
               {line}
             </Text>
           ))}
-          {caption !== '' && <Text dimColor>{caption}</Text>}
+          {caption !== '' && (
+            <Text dimColor mono size="caption">
+              {caption}
+            </Text>
+          )}
         </Box>
         <Box flexDirection="column" marginLeft={3} marginBottom={spare}>
           <Box flexDirection="row">

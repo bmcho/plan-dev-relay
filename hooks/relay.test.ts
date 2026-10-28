@@ -1571,3 +1571,42 @@ test('band leaves the model line out when it has no spare row and adds no spacer
   expect(right?.props?.marginBottom ?? 0).toBe(0)
   await tall.unmount()
 })
+
+test('band draws on desktop with the character in the monospaced face and the model line small', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  const clock = engine(on, 'S-DEV', world)
+  stepper(on)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+  await $.session.receive({ origin: { kind: 'peer' }, text: tag('plan', 'S-PLAN', '회원가입 API 오류 처리') } as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: '예외 클래스 추가', description: 'd' } as never)
+  world.files.set(
+    TODO_PLAN,
+    JSON.stringify({ sessionId: 'S-PLAN', todos: [], relay: [{ title: '회원가입 API 오류 처리', status: 'working' }], todoFor: null }),
+  )
+  await clock.advance(2000)
+  await step($, 'claude-opus-5-5', 'max')
+
+  // drawn()은 데스크톱이 그릴 수 없는 트리면 거절한다. 데스크톱은 Text를 비례 글꼴로 그리므로 캐릭터는 mono여야 한다.
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop', props: { ...BAND.props, isWorking: true } })
+  const [art] = ((await band.drawn()) as Drawn).children ?? []
+  expect(art?.children?.slice(0, 5).every(line => line.props?.mono === true)).toBe(true)
+  expect(art?.children?.[5]).toMatchObject({ props: { mono: true, size: 'caption' }, children: ['opus-5-5 · max'] })
+  expect(await band.find({ type: 'Text', text: '회원가입 API 오류 처리  개발 중' })).toBeDefined()
+  expect(await band.find({ type: 'Text', text: '예외 클래스 추가' })).toBeDefined()
+  await band.unmount()
+})
+
+test('/role shows why it failed instead of the engine fallback when it cannot write roles.json', async ($, on) => {
+  const world = newWorld()
+  world.failWrite = ROLES
+  engine(on, 'S-DEV', world)
+
+  const failed = await $.command.run({ command: 'role', args: 'dev' } as never)
+
+  // 괄호 안에 실패 이유가 들어간다. 테스트 엔진은 던진 오류를 자기 문구로 바꿔 넘긴다.
+  expect(failed.text).toMatch(/^역할 명령 실패 \(.+\)\. /)
+  expect(failed.text).toContain('logRoot')
+  // 실패한 등록은 역할을 남기지 않는다.
+  expect((await $.command.run({ command: 'role', args: '' } as never)).text).toContain('역할 없음')
+})
