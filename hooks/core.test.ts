@@ -3,6 +3,7 @@ import { expect, test } from 'claude-code/testing'
 import { artFor } from './art'
 import {
   agentCap,
+  baseName,
   buildReport,
   dayStamp,
   defaultModel,
@@ -154,6 +155,12 @@ test('artFor draws five lines per role and animates', () => {
   }
   expect(artFor('plan', 0).join('\n')).toContain('.oO(')
   expect(artFor('dev', 0).join('\n')).toContain('>_')
+})
+
+test('baseName and expandHome read Windows paths too', () => {
+  expect(baseName('C:\\Users\\kim\\git\\control-center')).toBe('control-center')
+  expect(baseName('/Users/kim/git/control-center/')).toBe('control-center')
+  expect(expandHome('~\\Documents\\plan-dev-log', 'C:\\Users\\kim')).toBe('C:\\Users\\kim\\Documents\\plan-dev-log')
 })
 
 test('expandHome replaces a leading ~ with the home folder only', () => {

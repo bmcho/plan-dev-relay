@@ -52,10 +52,11 @@ export type Roles = Partial<Record<Role, { sessionId: string; updatedAt: string 
 
 export const roleLabel = (role: Role) => (role === 'plan' ? '기획' : '개발')
 
+// Windows 경로(~\, C:\...)의 역슬래시도 나누는 기호로 본다.
 export const expandHome = (path: string, home: string) =>
-  path === '~' ? home : path.startsWith('~/') ? `${home}${path.slice(1)}` : path
+  path === '~' ? home : /^~[\\/]/.test(path) ? `${home}${path.slice(1)}` : path
 
-export const baseName = (path: string) => path.split('/').filter(Boolean).pop() ?? ''
+export const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? ''
 
 // dir: 한 repo의 로그 폴더 (<logRoot>/<repo 이름>)
 export const rolesPath = (dir: string) => `${dir}/roles.json`

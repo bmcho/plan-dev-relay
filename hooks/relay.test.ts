@@ -22,18 +22,20 @@ type World = {
   agents?: AgentInfo[]
   // 이 경로에 쓰기를 실패시킨다.
   failWrite?: string
+  // Windows 컴퓨터를 흉내 낸다: /bin/sh가 없고, 홈 폴더는 HOME 대신 USERPROFILE에 있고, 경로는 역슬래시로 나눈다.
+  windows?: boolean
 }
 
 // 엔진 바닥을 흉내 낸다. 테스트의 on() hook은 plugin 아래에 놓인다.
 // $ 호출 이벤트(session.id, fs.*, process.run, ui.toast ...)의 답은 { value }로 감싼다.
 const engine = (on: On, sessionId: string, world: World) => {
   const clock = mock.clock(on, { now: NOW })
-  mock.env(on, { HOME: '/Users/bmcho' })
+  const windows = world.windows === true
+  mock.env(on, windows ? { USERPROFILE: 'C:\\Users\\bmcho' } : { HOME: '/Users/bmcho' })
   on('session.id', () => ({ value: sessionId }))
-  on('session.repo', () => ({
-    value: { root: '/Users/bmcho/Documents/git/control-center', remote: null, internal: false } as never,
-  }))
-  on('fs.exists', ($, e) => ({ value: world.files.has(e.path) }))
+  const root = windows ? 'C:\\Users\\bmcho\\git\\control-center' : '/Users/bmcho/Documents/git/control-center'
+  on('session.repo', () => ({ value: { root, remote: null, internal: false } as never }))
+  on('fs.exists', ($, e) => ({ value: e.path === '/bin/sh' ? !windows : world.files.has(e.path) }))
   // 실제 엔진처럼 없는 파일 읽기는 예외로 끝난다.
   on('fs.read', ($, e) => {
     const text = world.files.get(e.path)
@@ -47,6 +49,7 @@ const engine = (on: On, sessionId: string, world: World) => {
   })
   // register.tsx의 /bin/sh 스크립트와 같은 효과: 새 파일이면 제목을 쓰고 stdin을 덧붙인다.
   on('process.run', ($, e) => {
+    if (windows) throw new Error(`ENOENT: ${e.argv[0]}`)
     const [, , , , path = '', repo = '', day = ''] = e.argv
     const before = world.files.get(path) ?? `# ${repo} plan-dev log ${day}\n`
     world.files.set(path, before + (e.init?.stdin ?? ''))
@@ -1609,4 +1612,24 @@ test('/role shows why it failed instead of the engine fallback when it cannot wr
   expect(failed.text).toContain('logRoot')
   // 실패한 등록은 역할을 남기지 않는다.
   expect((await $.command.run({ command: 'role', args: '' } as never)).text).toContain('역할 없음')
+})
+
+test('a Windows host keeps the role and the log under USERPROFILE without /bin/sh', async ($, on) => {
+  const world = newWorld()
+  world.windows = true
+  engine(on, 'S-DEV', world)
+
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+  await $.prompt.submit(userPrompt('직접 작업'))
+
+  // 홈 폴더 아래 repo 이름(역슬래시 경로의 마지막 칸) 폴더에 쓴다. 로그는 읽고 다시 써서 앞 항목이 남는다.
+  // 테스트는 macOS에서 돌아 C:\ 경로 앞에 작업 폴더가 붙으므로 끝부분으로 찾는다.
+  const dir = 'C:\\Users\\bmcho/Documents/claude/plan-dev-log/control-center'
+  const file = (name: string) => [...world.files].find(([path]) => path.endsWith(`${dir}/${name}`))?.[1] ?? ''
+  expect(JSON.parse(file('roles.json') || '{}').dev?.sessionId).toBe('S-DEV')
+  const log = file('2026-10-14.md')
+  expect(log.startsWith('# control-center plan-dev log 2026-10-14\n')).toBe(true)
+  expect(log.indexOf('[개발] 역할 등록')).toBeGreaterThan(0)
+  expect(log.indexOf('[개발] 직접 입력')).toBeGreaterThan(log.indexOf('[개발] 역할 등록'))
+  expect(world.uiLogs).toEqual([])
 })

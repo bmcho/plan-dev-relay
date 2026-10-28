@@ -137,6 +137,15 @@ const APPEND = [
 const appendLog = async ($: EngineInterface, logDir: string, ms: number, text: string) => {
   try {
     const path = logPath(logDir, ms)
+    // Windows처럼 /bin/sh가 없으면 읽고 다시 쓴다. 제목 줄은 APPEND의 printf와 같다.
+    // shortcut: 두 세션이 같은 순간에 쓰면 한쪽 항목이 빠질 수 있다, 자주 겹치면 세션별 로그 파일로 나눈다.
+    if (!(await $.fs.exists('/bin/sh'))) {
+      const before = (await $.fs.exists(path))
+        ? String(await $.fs.read(path))
+        : `# ${baseName(logDir)} plan-dev log ${dayStamp(ms)}\n`
+      await $.fs.write(path, before + text)
+      return
+    }
     const ran = await $.process.run(['/bin/sh', '-c', APPEND, 'sh', path, baseName(logDir), dayStamp(ms)], {
       stdin: text,
     })
@@ -464,7 +473,9 @@ export const register: Register = (on, options) => {
     const name = await repoName($)
     const configured =
       typeof options.logRoot === 'string' && options.logRoot !== '' ? options.logRoot : DEFAULT_LOG_ROOT
-    const root = expandHome(configured, (await $.env.get('HOME')) ?? '').replace(/\/+$/, '')
+    // Windows는 홈 폴더가 HOME 대신 USERPROFILE에 있다.
+    const home = (await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE')) ?? ''
+    const root = expandHome(configured, home).replace(/[\\/]+$/, '')
     const logDir = `${root}/${name}`
     const sessionId = await $.session.id()
     await writeRole($, logDir, next, sessionId, await $.clock.now())
