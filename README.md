@@ -14,6 +14,8 @@ Claude Code 세션 두 개를 **기획 세션**과 **개발 세션**으로 짝�
   모든 지시·수신·파일 수정·명령·보고·검수 보고서 ──▶ <logRoot>/<repo 이름>/YYYY-MM-DD.md
 ```
 
+버전별 변경 내역은 [CHANGELOG.md](CHANGELOG.md)에 있습니다.
+
 ## 목차
 
 1. [역할별로 하는 일](#1-역할별로-하는-일)
@@ -493,6 +495,7 @@ To-Do 공유 파일은 각 세션이 자기 몫만 2초마다 덮어씁니다. T
 
 ```
 plan-dev-relay/
+├── CHANGELOG.md           # 버전별 변경 내역
 ├── .claude-plugin/
 │   ├── plugin.json        # 플러그인 정보, userConfig(logRoot, maxAgents, subagentEffort)
 │   └── marketplace.json   # 이 저장소를 마켓플레이스로 쓰기 위한 목록 ("./")
@@ -527,6 +530,7 @@ claude plugin validate --strict .claude-plugin/plugin.json
 
 ### 새 버전 배포
 
-1. `.claude-plugin/plugin.json`과 `.claude-plugin/marketplace.json`의 `version`을 함께 올립니다.
-2. 테스트와 검증을 통과시킨 뒤 push합니다.
-3. 사용자는 [업데이트](#업데이트) 명령을 실행하고 세션을 다시 시작합니다.
+1. 바뀐 점을 `CHANGELOG.md`에 적습니다. 버그 수정은 patch(0.4.1 → 0.4.2), 새 기능·새 명령·눈에 띄는 동작 변경은 minor(0.4.x → 0.5.0)를 올립니다. 문서만 바뀌면 버전을 올리지 않습니다.
+2. `.claude-plugin/plugin.json`과 `.claude-plugin/marketplace.json`의 `version`을 함께 올립니다. 마켓플레이스로 설치한 곳은 version이 바뀌어야 업데이트를 받습니다.
+3. 테스트와 검증을 통과시킨 뒤 push합니다.
+4. 사용자는 [업데이트](#업데이트) 명령을 실행하고 세션을 다시 시작합니다.
