@@ -8,7 +8,7 @@
     "logRoot": {
       "type": "string",
       "title": "로그 폴더",
-      "description": "로그와 roles.json을 둘 폴더. repo마다 하위 폴더가 생긴다. ~는 홈 폴더로 바뀐다.",
+      "description": "로그와 roles.json을 둘 폴더. repo마다 하위 폴더가 생긴다. ~는 홈 폴더(Windows는 USERPROFILE)로 바뀐다.",
       "default": "~/Documents/claude/plan-dev-log"
     },
     "maxAgents": {
