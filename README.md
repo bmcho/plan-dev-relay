@@ -154,7 +154,7 @@ Claude Code 세션 두 개를 **기획 세션**과 **개발 세션**으로 짝�
 | 항목 | 내용 |
 | --- | --- |
 | Claude Code | 2.1.287 이상. mod의 function hooks API는 초기 공개 단계라 버전이 바뀌면 동작이 달라질 수 있습니다. |
-| 운영체제 | macOS 또는 Linux. 로그를 `/bin/sh`로 씁니다. |
+| 운영체제 | macOS, Linux, Windows. macOS와 Linux는 로그를 `/bin/sh`로 덧붙입니다. Windows는 로그 파일을 읽고 다시 써서, 두 세션이 같은 순간에 로그를 쓰면 드물게 한 항목이 빠질 수 있습니다. |
 | 시간대 | 로그 시각은 KST(UTC+9) 기준입니다. |
 | 저장소 접근 | 비공개 저장소라면 이 저장소 주소로 `git clone`이 되어야 합니다(SSH 키 또는 HTTPS 토큰). |
 
@@ -205,7 +205,7 @@ Claude Code 세션 두 개를 **기획 세션**과 **개발 세션**으로 짝�
 git clone https://github.com/bmcho/plan-dev-relay.git
 ```
 
-`~/.claude/settings.json`에 clone한 폴더 경로를 넣습니다.
+`~/.claude/settings.json`(Windows는 `%USERPROFILE%\.claude\settings.json`)에 clone한 폴더 경로를 넣습니다.
 
 ```json
 {
@@ -241,7 +241,7 @@ claude plugin marketplace remove plan-dev-relay
 
 | 설정 | 기본값 | 설명 |
 | --- | --- | --- |
-| `logRoot` (로그 폴더) | `~/Documents/claude/plan-dev-log` | 로그와 `roles.json`을 둘 폴더입니다. repo마다 하위 폴더가 생깁니다. `~`는 홈 폴더로 바뀝니다. |
+| `logRoot` (로그 폴더) | `~/Documents/claude/plan-dev-log` | 로그와 `roles.json`을 둘 폴더입니다. repo마다 하위 폴더가 생깁니다. `~`는 홈 폴더(Windows는 `USERPROFILE`)로 바뀝니다. |
 | `maxAgents` (서브에이전트 상한) | `3` | 기획·개발 세션에서 동시에 일하는 서브에이전트 수의 상한입니다. `0`이면 제한하지 않습니다. |
 | `subagentEffort` (서브에이전트 effort) | `haiku=low sonnet=high opus=max` | 서브에이전트가 모델별로 쓸 effort입니다. `모델=레벨` 쌍을 공백이나 쉼표로 나눠 한 줄에 적습니다. 모델은 haiku, sonnet, opus, fable, 레벨은 low, medium, high, xhigh, max입니다. 적지 않은 모델은 세션 설정을 따르고, 비워 두면 effort를 바꾸지 않습니다. |
 
@@ -453,7 +453,7 @@ To-Do 공유 파일은 각 세션이 자기 몫만 2초마다 덮어씁니다. T
 | 보고가 와도 검수를 시작하지 않는다 | 두 세션의 권한 모드가 다르면 보고가 승인 대기에 걸릴 수 있습니다. 두 세션의 권한 모드를 맞추세요. |
 | 로그에 `검수 보고 누락`이 남는다 | 기획 모델이 검수 보고서 형식을 따르지 않았거나 검수가 중단됐습니다. 기획 세션에 "검수 보고서 형식으로 다시 검수해 줘"라고 요청하면, 그 답변이 검수 보고로 남습니다. |
 | 로그와 보고가 두 번씩 남는다 | 마켓플레이스 설치(방법 A)와 폴더 불러오기(방법 C)를 함께 쓰고 있습니다. 하나만 쓰세요. |
-| 로그 파일이 생기지 않는다 | `logRoot` 경로에 쓰기 권한이 있는지 확인하세요. Windows는 지원하지 않습니다. |
+| 로그 파일이 생기지 않는다 | `logRoot` 경로에 쓰기 권한이 있는지 확인하세요. |
 | "roles.json이 깨져서…" 메시지가 보인다 | 짝 정보 파일이 손상되었습니다. 빈 짝 정보로 계속 동작하며, 양쪽에서 `/role`을 다시 입력하면 새로 써집니다. |
 | To-Do 목록이 보이지 않는다 | 에이전트가 TaskCreate·TaskUpdate(또는 TodoWrite)로 단계를 적지 않았습니다. 안내문은 강제가 아니므로 "단계를 TaskCreate로 적어 줘"라고 요청하세요. 릴레이 행은 지시를 보내면 나타납니다. |
 | 상대 세션의 목록이 보이지 않거나 늦게 바뀐다 | 목록은 2초마다 공유 파일로 주고받아 최대 약 4초 늦습니다. 두 세션이 같은 repo에서 `/role`을 입력했는지, `logRoot`에 쓰기 권한이 있는지 확인하세요. |
