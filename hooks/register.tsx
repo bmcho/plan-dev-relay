@@ -39,7 +39,11 @@ import {
   parseStop,
   parseTag,
   parseVerdict,
+  PLAN_GUARD_FAILED,
+  PLAN_MAIN_DENY,
+  PLAN_SUBAGENT_DENY,
   planGuide,
+  planMay,
   RELAY_USAGE,
   REPORT_LIMIT,
   REVIEW_MARK,
@@ -57,6 +61,7 @@ import {
 } from './core'
 import {
   applyTaskCreate,
+  applyTaskList,
   applyTaskUpdate,
   applyTodoWrite,
   isAllDone,
@@ -503,6 +508,10 @@ export const register: Register = (on, options) => {
     await writeRole($, logDir, next, sessionId, await $.clock.now())
     await update($, dir, () => logDir)
     await update($, role, () => next)
+    // 역할을 다시 맺으면 To-Do 목록도 새로 시작한다. 지난 일의 남은 단계가 계속 남지 않게 한다.
+    await update($, todos, () => [])
+    await update($, relay, () => [])
+    await update($, todoFor, () => null)
     poll?.cancel()
     poll = syncTimer($)
     await log($, `[${roleLabel(next)}] 역할 등록`, `session: ${sessionId}`)
@@ -673,9 +682,17 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // 기획 세션은 고치는 일을 개발 세션에 맡긴다. 서브에이전트의 파일 수정 도구와, 읽기·테스트가 아닌 Bash를 막는다.
+  // 이 확인이 next 전에 실패하면 기획 세션에서는 막고, 다른 세션에서는 그대로 둔다(아래 .catch).
   on('tool.call', async ($, e, next) => {
-    const ran = await next(e)
     const mine = await read($, role)
+    const isSubagent = e.agentId !== undefined
+    // 메인의 Bash만 프로젝트 폴더(세션이 시작한 폴더) 기준으로 본다.
+    const root = mine === 'plan' && !isSubagent && e.tool === 'Bash' ? await $.session.root() : ''
+    if (mine === 'plan' && !planMay(e.tool, e.tool === 'Bash' ? e.command : undefined, isSubagent, root)) {
+      return { deny: isSubagent ? PLAN_SUBAGENT_DENY : PLAN_MAIN_DENY }
+    }
+    const ran = await next(e)
     const current = await read($, task)
     const isOk = ran.deny === undefined && ran.isError !== true
 
@@ -688,6 +705,8 @@ export const register: Register = (on, options) => {
         await update($, todos, list => applyTaskUpdate(list, e, ran.result))
       } else if (e.tool === 'TodoWrite') {
         await update($, todos, list => applyTodoWrite(list, e.todos))
+      } else if (e.tool === 'TaskList') {
+        await update($, todos, list => applyTaskList(list, ran.result))
       }
     }
 
@@ -706,16 +725,17 @@ export const register: Register = (on, options) => {
       await log($, `[개발] 명령 ${isOk ? '성공' : '실패'}`, `\`${e.command}\``)
     }
     return ran
-  })
+  }).catch(async ($, e, next) => (next.called || (await read($, role)) !== 'plan' ? next(e) : { deny: PLAN_GUARD_FAILED }))
 
   on('agent.spawn', async ($, e, next) => {
     // 메인 loop가 새로 띄우는 서브에이전트만 다룬다. 팀원, 워크플로 에이전트, 이어 하기는 그대로 둔다.
     const isNew =
       e.parentAgentId === undefined && e.isTeammate === undefined && e.workflow === undefined && e.resume === undefined
-    if (!isNew || (await read($, role)) === null) return next(e)
+    const mine = await read($, role)
+    if (!isNew || mine === null) return next(e)
 
-    // 호출이 model을 비운 엔진의 Explore는 haiku로 띄운다.
-    const model = e.model ?? (e.provider.plugin === 'engine' ? defaultModel(e.subagentType) : undefined)
+    // 호출이 model을 비운 엔진 서브에이전트는 종류와 역할에 맞는 기본 모델로 띄운다.
+    const model = e.model ?? (e.provider.plugin === 'engine' ? defaultModel(e.subagentType, mine) : undefined)
     const spawn = model === e.model ? e : { ...e, model }
     if (cap === 0) return next(spawn)
     const started = spawning.then(async () => {

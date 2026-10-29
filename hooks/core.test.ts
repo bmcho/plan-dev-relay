@@ -14,6 +14,7 @@ import {
   envelopeNames,
   expandHome,
   firstLine,
+  isReadOnlyCommand,
   logPath,
   modelLine,
   parseAgentEffort,
@@ -26,6 +27,8 @@ import {
   parseTag,
   parseVerdict,
   planGuide,
+  isProjectWrite,
+  planMay,
   REPORT_LIMIT,
   reviewGuide,
   reviewHeader,
@@ -310,16 +313,17 @@ test('both role guides ask the agent to keep its steps with the task tools', () 
   expect(devGuide()).toContain('TaskCreate·TaskUpdate(없으면 TodoWrite)')
 })
 
-test('both role guides tell the agent which model to give each kind of subagent work', () => {
+test('both role guides leave the subagent model to the mod unless the user names one', () => {
   for (const guide of [planGuide(), devGuide()]) {
-    expect(guide).toContain('찾기·조사는 Explore로 띄운다')
-    expect(guide).toContain('양이 많고 판단이 적은 일은 `model: "sonnet"`을 적는다')
-    expect(guide).toContain('판단이 필요한 일은 model을 비워 세션 모델을 쓴다')
+    expect(guide).toContain('찾기·위치 파악은 Explore로 띄운다')
+    expect(guide).toContain('model은 사용자가 모델을 지정했을 때만 적는다')
+    expect(guide).not.toContain('model: "sonnet"')
   }
 })
 
 test('only the plan guide keeps implementation away from subagents', () => {
   expect(planGuide()).toContain('서브에이전트에게도 구현이나 수정을 맡기지 않는다')
+  expect(planGuide()).toContain('파일 고치기, 지우기, 커밋, push는 개발 세션에 지시한다')
   expect(devGuide()).not.toContain('서브에이전트에게도 구현이나 수정을 맡기지 않는다')
 })
 
@@ -387,8 +391,171 @@ test('agentCap takes a whole number from 0 and falls back to 3 otherwise', () =>
   expect(agentCap(undefined)).toBe(3)
 })
 
-test('defaultModel fills only Explore and leaves other types to the session model', () => {
-  expect(defaultModel('Explore')).toBe('haiku')
-  expect(defaultModel('general-purpose')).toBeUndefined()
-  expect(defaultModel('Plan')).toBeUndefined()
+test('defaultModel gives lookups haiku, plan general-purpose sonnet, and leaves the rest to the session model', () => {
+  for (const role of ['plan', 'dev'] as const) {
+    expect(defaultModel('Explore', role)).toBe('haiku')
+    expect(defaultModel('claude-code-guide', role)).toBe('haiku')
+    expect(defaultModel('statusline-setup', role)).toBe('haiku')
+    expect(defaultModel('Plan', role)).toBeUndefined()
+  }
+  expect(defaultModel('general-purpose', 'plan')).toBe('sonnet')
+  expect(defaultModel('general-purpose', 'dev')).toBeUndefined()
+})
+
+test('isReadOnlyCommand lets search and git reading through', () => {
+  for (const command of [
+    'grep -rn "foo|bar" src',
+    "rg -n 'a;b' docs",
+    'find . -name "*.ts" -not -path "./node_modules/*"',
+    'cat docs/a.md | head -20',
+    'cd docs && grep -l TODO *.md 2>/dev/null',
+    'ls -la docs >/dev/null 2>&1; wc -l README.md',
+    "sed -n '1,40p' README.md",
+    'git log --oneline -5',
+    'git -C ../repo diff HEAD~1 -- docs',
+    'git show HEAD:README.md | grep -c x',
+    'jq .version package.json',
+    'for f in docs/*.md; do grep -c TODO "$f"; done',
+    'M=acs/src/main; ls $M/common',
+    'F="docs/a b.md"; sed -n 1,20p "$F" | cut -c1-80',
+    'f=$(rg -l "class Foo" src); echo $f; grep -n bar "$f"',
+    'echo "tracked: $(git ls-files docs | wc -l)"',
+    'if [ -f a.md ]; then cat a.md; fi',
+    'grep x $(cat list.txt)',
+    'grep x `cat list.txt`',
+    'grep -n "a\\"b" f.md',
+    'grep -n "x\\`y" f.md',
+    "python3 - docs/a.html <<'EOF'\nimport re, sys\nprint(len(open(sys.argv[1]).read()))\nEOF",
+    'python3 -c "print(1)"',
+    'python3 -m pytest -q',
+    'find src -name "*.java" > /tmp/classes.txt',
+    "mkdir -p /tmp/review && cat > /tmp/review/s.py <<'EOF'\nprint(1)\nEOF",
+    './gradlew test',
+    './gradlew :acs:test --tests "com.x.FooTest"',
+    'npm test',
+    'npm run test:unit',
+    'go test ./...',
+    'mvn -q test',
+    'pytest -q tests',
+  ]) {
+    expect({ command, ok: isReadOnlyCommand(command) }).toEqual({ command, ok: true })
+  }
+})
+
+test('isReadOnlyCommand stops commands that write or run unknown programs', () => {
+  for (const command of [
+    'rm docs/a.md',
+    "sed -i '' 's/a/b/' README.md",
+    "python3 - <<'EOF'\nopen('a','w')\nEOF",
+    'python3 fix.py',
+    'cat a.md > b.md',
+    'echo x >> notes.md',
+    'grep x a.md | tee out.md',
+    'find . -name "*.tmp" -delete',
+    'find . -exec rm {} \\;',
+    'git commit -m x',
+    'git push origin main',
+    'git checkout -- README.md',
+    'git diff --output=patch.txt',
+    'mv a.md b.md',
+    "awk '{ system(\"rm \" $1) }' list.txt",
+    'xargs rm < list.txt',
+    'for f in *.md; do rm "$f"; done',
+    'F=a.md; sed -i "" s/a/b/ "$F"',
+    'echo $(rm a.md)',
+    "python3 - <<'EOF'\nfrom pathlib import Path\nPath('a.md').write_text('x')\nEOF",
+    'python3 -c "import shutil; shutil.move(\'a\', \'b\')"',
+    'mkdir docs/new',
+    './gradlew build',
+    './gradlew spotlessApply',
+    'npm run build',
+    'npm test -- -u',
+    "sed -n 'w out.txt' a.md",
+  ]) {
+    expect({ command, ok: isReadOnlyCommand(command) }).toEqual({ command, ok: false })
+  }
+})
+
+test('planMay keeps editing tools from subagents and writing Bash from the whole plan session', () => {
+  for (const tool of ['Edit', 'Write', 'NotebookEdit', 'Monitor']) {
+    expect(planMay(tool, undefined, true, '/r')).toBe(false)
+    expect(planMay(tool, undefined, false, '/r')).toBe(true)
+  }
+  for (const isSubagent of [true, false]) {
+    expect(planMay('Bash', 'rm a.md', isSubagent, '/r')).toBe(false)
+    expect(planMay('Bash', 'git push', isSubagent, '/r')).toBe(false)
+    expect(planMay('Bash', 'grep -rn x src', isSubagent, '/r')).toBe(true)
+    expect(planMay('Bash', './gradlew test', isSubagent, '/r')).toBe(true)
+    expect(planMay('Read', undefined, isSubagent, '/r')).toBe(true)
+  }
+  // 빌드와 모르는 명령은 메인만 된다.
+  expect(planMay('Bash', './gradlew build', false, '/r')).toBe(true)
+  expect(planMay('Bash', './gradlew build', true, '/r')).toBe(false)
+})
+
+test('isProjectWrite stops the plan main from changing project files and git history', () => {
+  for (const command of [
+    'rm docs/old.md',
+    'mv a.md b.md',
+    'cp a.md docs/b.md',
+    'echo x > docs/a.md',
+    "sed -i '' 's/a/b/' README.md",
+    'git add -A && git commit -m docs',
+    'git push origin main',
+    'git checkout -- README.md',
+    'git branch -D old',
+    "python3 - <<'EOF'\nimport shutil\nshutil.move('a', 'b')\nEOF",
+    'echo "$(rm a.md)"',
+  ]) {
+    expect({ command, write: isProjectWrite(command, '/Users/me/repo') }).toEqual({ command, write: true })
+  }
+})
+
+test('isProjectWrite lets the plan main read, build, test and use temp folders', () => {
+  for (const command of [
+    'git diff --stat && git log --oneline -3',
+    'git fetch -q origin',
+    './gradlew build',
+    'date +%H:%M; sleep 1',
+    'rm -rf /tmp/review',
+    'cp README.md /tmp/review/README.md',
+    'cat > /private/tmp/claude-501/x/scratchpad/a.py <<\'EOF\'\nprint(1)\nEOF',
+    'cd /Users/me/.claude/jobs/abc/tmp && grep -rn x . > /Users/me/.claude/jobs/abc/tmp/out.txt',
+    'python3 /tmp/review/analyze.py docs',
+    "python3 - <<'EOF'\nprint(open('README.md').read()[:100])\nEOF",
+  ]) {
+    expect({ command, write: isProjectWrite(command, '/Users/me/repo') }).toEqual({ command, write: false })
+  }
+})
+
+test('the shell reading follows variables, cd into temp folders, wrappers and process substitution', () => {
+  // 읽기 검사(서브에이전트)
+  expect(isReadOnlyCommand('T=/tmp/review; grep -rn x src > $T/out.txt')).toBe(true)
+  expect(isReadOnlyCommand('cd /tmp/review && echo x > notes.txt')).toBe(true)
+  expect(isReadOnlyCommand('timeout 60 ./gradlew test')).toBe(true)
+  expect(isReadOnlyCommand('diff <(git show HEAD:a.md) a.md')).toBe(true)
+  expect(isReadOnlyCommand("python3 - <<'EOF'\nprint(open('arcl.txt', encoding='utf-8').read())\nEOF")).toBe(true)
+  expect(isReadOnlyCommand("python3 - <<'EOF'\nimport subprocess\nsubprocess.run(['git', 'log'])\nEOF")).toBe(false)
+  expect(isReadOnlyCommand('T=docs; echo x > $T/a.md')).toBe(false)
+  expect(isReadOnlyCommand('diff <(rm a.md) b.md')).toBe(false)
+  // 프로젝트 쓰기 검사(기획 메인)
+  expect(isProjectWrite('J=/Users/me/.claude/jobs/abc/tmp; rm -rf $J/dt2 && cd $J/dt2/repo && git apply x.patch && git commit -qm t', '/Users/me/repo')).toBe(false)
+  expect(isProjectWrite('git -C /tmp/clone commit -m t', '/Users/me/repo')).toBe(false)
+  expect(isProjectWrite('rm -rf build acs/build', '/Users/me/repo')).toBe(false)
+  expect(isProjectWrite("sed -i '' 's/a/b/' /Users/me/.claude/jobs/abc/tmp/plan.md", '/Users/me/repo')).toBe(false)
+  expect(isProjectWrite('caffeinate -i ./gradlew cleanTest check > /tmp/check.log 2>&1', '/Users/me/repo')).toBe(false)
+  expect(isProjectWrite("python3 - <<'EOF'\nopen('report.txt', 'w').write('x')\nEOF", '/Users/me/repo')).toBe(true)
+  expect(isProjectWrite("cd /tmp/x && python3 - <<'EOF'\nopen('report.txt', 'w').write('x')\nEOF", '/Users/me/repo')).toBe(false)
+  expect(isProjectWrite('cd /tmp/x && cd /Users/me/repo && git commit -m t', '/Users/me/repo')).toBe(true)
+  expect(isProjectWrite("sed -i '' 's/a/b/' README.md", '/Users/me/repo')).toBe(true)
+})
+
+test('isProjectWrite lets the plan main write outside the project folder and dry-run patches', () => {
+  const root = '/Users/me/repo'
+  expect(isProjectWrite("cd /Users/me/.claude/projects/x/memory && python3 - <<'EOF'\nopen('a.md', 'w').write('x')\nEOF", root)).toBe(false)
+  expect(isProjectWrite("printf '%s\\n' x >> /Users/me/.claude/projects/x/memory/MEMORY.md", root)).toBe(false)
+  expect(isProjectWrite('git apply --check /tmp/fix.patch', root)).toBe(false)
+  expect(isProjectWrite('echo x > /Users/me/repo/docs/a.md', root)).toBe(true)
+  expect(isProjectWrite('cd /Users/me/repo/docs && rm old.md', root)).toBe(true)
+  expect(isProjectWrite('git apply /tmp/fix.patch', root)).toBe(true)
 })

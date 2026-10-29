@@ -64,6 +64,23 @@ const RELAY_STATUS = new Set(['working', 'reviewing', 'passed', 'rejected'])
 const isTodo = (item: unknown) =>
   typeof (item as AgentTodo | null)?.text === 'string' && TODO_STATUS.has((item as AgentTodo).status)
 
+const isTask = (item: unknown) => {
+  const task = item as { id?: unknown; subject?: unknown; status?: unknown } | null
+  return typeof task?.id === 'string' && typeof task.subject === 'string' && TODO_STATUS.has(String(task.status))
+}
+
+// TaskList는 지금 살아 있는 작업 전체를 준다. 목록에 없는 작업(Claude Code가 이미 치운 것)은 지우고,
+// 이름과 상태는 그 결과로 맞춘다. id가 없는 TodoWrite 항목은 그대로 둔다. 모양이 다르면 목록을 그대로 둔다.
+export const applyTaskList = (todos: AgentTodo[], result: unknown): AgentTodo[] => {
+  const tasks = (result as { tasks?: unknown } | null | undefined)?.tasks
+  if (!Array.isArray(tasks) || !tasks.every(isTask)) return todos
+  const listed = tasks as { id: string; subject: string; status: AgentTodo['status'] }[]
+  return [
+    ...todos.filter(todo => todo.id === undefined),
+    ...listed.map(task => ({ id: task.id, text: task.subject, status: task.status })),
+  ]
+}
+
 const isRow = (item: unknown) =>
   typeof (item as RelayItem | null)?.title === 'string' && RELAY_STATUS.has((item as RelayItem).status)
 

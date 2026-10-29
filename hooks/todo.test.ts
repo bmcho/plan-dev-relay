@@ -2,6 +2,7 @@ import { expect, test } from 'claude-code/testing'
 
 import type { AgentTodo, RelayItem } from '../types'
 import {
+  applyTaskList,
   applyTaskCreate,
   applyTaskUpdate,
   applyTodoWrite,
@@ -247,4 +248,20 @@ test('isAllDone is true only when every step is completed and every relay row pa
   expect(isAllDone([{ text: 'b', status: 'in_progress' }], [passed])).toBe(false)
   expect(isAllDone([done], [{ title: 'x', status: 'rejected' }])).toBe(false)
   expect(isAllDone([done], [{ title: 'x', status: 'reviewing' }])).toBe(false)
+})
+
+test('applyTaskList keeps only the tasks Claude Code still lists, with their current state', () => {
+  const todos: AgentTodo[] = [
+    { id: '22', text: '오래된 단계', status: 'in_progress' },
+    { id: '30', text: '이름 바뀔 단계', status: 'pending' },
+    { text: 'TodoWrite 단계', status: 'pending' },
+  ]
+  const listed = { tasks: [{ id: '30', subject: '새 이름', status: 'completed', blockedBy: [] }] }
+  expect(applyTaskList(todos, listed)).toEqual([
+    { text: 'TodoWrite 단계', status: 'pending' },
+    { id: '30', text: '새 이름', status: 'completed' },
+  ])
+  expect(applyTaskList(todos, { tasks: [] })).toEqual([{ text: 'TodoWrite 단계', status: 'pending' }])
+  expect(applyTaskList(todos, { tasks: [{ id: 3 }] })).toBe(todos)
+  expect(applyTaskList(todos, null)).toBe(todos)
 })

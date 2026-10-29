@@ -22,6 +22,8 @@ type World = {
   agents?: AgentInfo[]
   // 이 경로에 쓰기를 실패시킨다.
   failWrite?: string
+  // TaskList 도구의 결과
+  taskList?: unknown
   // Windows 컴퓨터를 흉내 낸다: /bin/sh가 없고, 홈 폴더는 HOME 대신 USERPROFILE에 있고, 경로는 역슬래시로 나눈다.
   windows?: boolean
 }
@@ -35,6 +37,7 @@ const engine = (on: On, sessionId: string, world: World) => {
   on('session.id', () => ({ value: sessionId }))
   const root = windows ? 'C:\\Users\\bmcho\\git\\control-center' : '/Users/bmcho/Documents/git/control-center'
   on('session.repo', () => ({ value: { root, remote: null, internal: false } as never }))
+  on('session.root', () => ({ value: root }))
   on('fs.exists', ($, e) => ({ value: e.path === '/bin/sh' ? !windows : world.files.has(e.path) }))
   // 실제 엔진처럼 없는 파일 읽기는 예외로 끝난다.
   on('fs.read', ($, e) => {
@@ -80,6 +83,9 @@ const engine = (on: On, sessionId: string, world: World) => {
     if (e.tool === 'TaskCreate') {
       taskId += 1
       return { result: { task: { id: String(taskId), subject: e.subject } }, isError: false, text: 'ok' } as never
+    }
+    if (e.tool === 'TaskList') {
+      return { result: world.taskList ?? { tasks: [] }, isError: false, text: 'ok' } as never
     }
     if (e.tool === 'TaskUpdate') {
       return { result: { success: true, taskId: e.taskId, updatedFields: ['status'] }, isError: false, text: 'ok' } as never
@@ -1371,18 +1377,32 @@ const spawn = ($: Engine, subagentType: string, more: Record<string, unknown> = 
     ...more,
   } as never)
 
-test('a relay session gives Explore haiku and leaves general-purpose to the session model', async ($, on) => {
+test('a plan session gives lookups haiku and general-purpose sonnet', async ($, on) => {
   const world = newWorld()
   const spawned = spawner(on, world)
   await planWithDev($, on, world)
 
   await spawn($, 'Explore')
+  await spawn($, 'claude-code-guide')
   await spawn($, 'general-purpose')
 
   expect(spawned).toEqual([
     { subagentType: 'Explore', model: 'haiku' },
-    { subagentType: 'general-purpose', model: undefined },
+    { subagentType: 'claude-code-guide', model: 'haiku' },
+    { subagentType: 'general-purpose', model: 'sonnet' },
   ])
+})
+
+test('a dev session leaves general-purpose to the session model', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  engine(on, 'S-DEV', world)
+  const spawned = spawner(on, world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+
+  await spawn($, 'general-purpose')
+
+  expect(spawned).toEqual([{ subagentType: 'general-purpose', model: undefined }])
 })
 
 test('a relay session keeps the model the call names and leaves other agent types alone', async ($, on) => {
@@ -1472,7 +1492,7 @@ test('a relay session sets each subagent step effort by its model', async ($, on
   await step($, 'claude-opus-5-5', 'medium', 'A3')
   await step($, 'claude-fable-5-1', 'medium', 'A4')
 
-  expect(efforts).toEqual(['low', 'high', 'max', 'medium'])
+  expect(efforts).toEqual(['low', 'high', 'high', 'medium'])
 })
 
 test('main loop steps, sessions without a role and models without effort keep their effort', async ($, on) => {
@@ -1684,13 +1704,13 @@ test('/agentEffort shows the levels and changes one model, keeping the others', 
   const sets = configs(on)
 
   expect((await $.command.run({ command: 'agentEffort', args: '' } as never)).text).toContain(
-    '서브에이전트 effort: haiku=low sonnet=high opus=max',
+    '서브에이전트 effort: haiku=low sonnet=high opus=high',
   )
   expect((await $.command.run({ command: 'agentEffort', args: 'sonnet m' } as never)).text).toBe(
-    '서브에이전트 effort를 haiku=low sonnet=medium opus=max로 바꿨습니다.',
+    '서브에이전트 effort를 haiku=low sonnet=medium opus=high로 바꿨습니다.',
   )
   expect((await $.command.run({ command: 'agentEffort', args: 'gpt max' } as never)).text).toContain('사용법: /agentEffort')
-  expect(sets).toEqual([{ key: 'plan-dev-relay.subagentEffort', value: 'haiku=low sonnet=medium opus=max' }])
+  expect(sets).toEqual([{ key: 'plan-dev-relay.subagentEffort', value: 'haiku=low sonnet=medium opus=high' }])
 })
 
 test('the setting commands say so when the settings refuse the change', async ($, on) => {
@@ -1701,4 +1721,85 @@ test('the setting commands say so when the settings refuse the change', async ($
   const refused = await $.command.run({ command: 'subagents', args: '5' } as never)
 
   expect(refused.text).toBe('설정을 바꾸지 못했습니다: 관리 설정이 정한 값입니다')
+})
+
+test('a plan session refuses file changes from its subagents but lets them read', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+
+  const edit = await $.tool.call({ tool: 'Edit', file_path: 'docs/a.md', old_string: 'a', new_string: 'b', agentId: 'A1' } as never)
+  const script = await $.tool.call({
+    tool: 'Bash',
+    command: "python3 - <<'EOF'\nopen('docs/a.md', 'w').write('x')\nEOF",
+    agentId: 'A1',
+  } as never)
+  const tests = await $.tool.call({ tool: 'Bash', command: './gradlew :acs:test', agentId: 'A1' } as never)
+  const search = await $.tool.call({ tool: 'Bash', command: 'grep -rn "a|b" docs', agentId: 'A1' } as never)
+  const nested = await $.tool.call({ tool: 'Write', file_path: 'docs/b.md', content: 'x', agentId: 'A2' } as never)
+
+  expect(edit.deny).toContain('기획 세션의 서브에이전트는 파일을 고칠 수 없습니다')
+  expect(script.deny).toContain('읽기 명령')
+  expect(search.deny).toBeUndefined()
+  expect(tests.deny).toBeUndefined()
+  expect(nested.deny).toBeDefined()
+})
+
+test('the plan main loop writes plan documents but cannot change files with Bash', async ($, on) => {
+  const world = newWorld()
+  await planWithDev($, on, world)
+
+  const plan = await $.tool.call({ tool: 'Write', file_path: 'docs/plan.md', content: '계획' } as never)
+  const remove = await $.tool.call({ tool: 'Bash', command: 'rm docs/old.md' } as never)
+  const commit = await $.tool.call({ tool: 'Bash', command: 'git commit -m docs && git push' } as never)
+  const diff = await $.tool.call({ tool: 'Bash', command: 'git diff --stat' } as never)
+  const tests = await $.tool.call({ tool: 'Bash', command: './gradlew test' } as never)
+
+  expect(plan.deny).toBeUndefined()
+  expect(remove.deny).toContain('기획 세션은 Bash로 프로젝트 파일을 지우거나 옮기거나 고칠 수 없고')
+  expect(commit.deny).toBeDefined()
+  expect(diff.deny).toBeUndefined()
+  expect(tests.deny).toBeUndefined()
+})
+
+test('a dev session lets its subagents change files', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  engine(on, 'S-DEV', world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+
+  const edit = await $.tool.call({ tool: 'Edit', file_path: 'a.java', old_string: 'a', new_string: 'b', agentId: 'A1' } as never)
+  const bash = await $.tool.call({ tool: 'Bash', command: 'rm build.log', agentId: 'A1' } as never)
+
+  expect(edit.deny).toBeUndefined()
+  expect(bash.deny).toBeUndefined()
+})
+
+test('plan matches its To-Do to TaskList and clears it once every listed step is done', async ($, on) => {
+  const world = newWorld()
+  const clock = await planWithDev($, on, world)
+  await $.tool.call({ tool: 'TaskCreate', subject: '오래된 단계', description: 'd' } as never)
+  await $.tool.call({ tool: 'TaskCreate', subject: '마지막 단계', description: 'd' } as never)
+
+  // Claude Code가 이미 치운 1번은 TaskList에 없다.
+  world.taskList = { tasks: [{ id: '2', subject: '마지막 단계', status: 'completed', blockedBy: [] }] }
+  await $.tool.call({ tool: 'TaskList' } as never)
+  await clock.advance(2000)
+  expect(shared(world, TODO_PLAN).todos).toEqual([{ id: '2', text: '마지막 단계', status: 'completed' }])
+
+  await ordinaryTurn($, '끝났습니다.')
+  await clock.advance(2000)
+  expect(shared(world, TODO_PLAN).todos).toEqual([])
+})
+
+test('/role starts the To-Do list over', async ($, on) => {
+  const world = newWorld()
+  const clock = await planWithDev($, on, world)
+  await $.tool.call({ tool: 'TaskCreate', subject: '남은 단계', description: 'd' } as never)
+  await $.session.send({ to: 'dev-session', text: '경로 API 추가', origin: { kind: 'model' } })
+  await clock.advance(2000)
+  expect(shared(world, TODO_PLAN).todos).toHaveLength(1)
+
+  await $.command.run({ command: 'role', args: 'plan' } as never)
+  await clock.advance(2000)
+  expect(shared(world, TODO_PLAN)).toEqual({ sessionId: 'S-PLAN', todos: [], relay: [], todoFor: null })
 })
