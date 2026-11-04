@@ -16,6 +16,16 @@ export type DevNames = { sessionId: string; names: string[] }
 
 // 메인 loop의 마지막 모델 요청이 쓴 모델과 effort. effort를 받지 않는 모델은 effort가 없다.
 export type MainModel = { model: string; effort?: string | number }
+// 서브에이전트 pane의 한 칸. type과 description은 Agent 호출의 값, model과 effort는 그 에이전트의 마지막 모델 요청 값,
+// activity는 그 에이전트가 방금 부른 도구다. 이벤트가 오는 순서가 정해져 있지 않아 id 말고는 아직 없을 수 있다.
+export type AgentCard = {
+  id: string
+  type?: string
+  description?: string
+  model?: string
+  effort?: string | number
+  activity?: string
+}
 
 declare module 'claude-code' {
   interface PluginState {
@@ -31,6 +41,8 @@ declare module 'claude-code' {
       review: Review
       // 메인이 띄운 서브에이전트 중 아직 일하는 것의 id. 이 동안은 세션이 일하는 중으로 본다.
       agents: string[]
+      // 서브에이전트 pane에 보일 정보. 끝난 에이전트의 것은 지운다.
+      agentCards: AgentCard[]
       // 메인 loop의 마지막 모델 요청. 아직 없으면 null
       mainModel: MainModel | null
       // 이 세션 에이전트의 To-Do. 완료 항목도 남긴다.

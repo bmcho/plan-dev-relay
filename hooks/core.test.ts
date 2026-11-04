@@ -1,7 +1,8 @@
 import { expect, test } from 'claude-code/testing'
 
-import { artFor } from './art'
+import { agentArt, artFor } from './art'
 import {
+  activityLine,
   agentCap,
   baseName,
   buildReport,
@@ -29,6 +30,7 @@ import {
   planGuide,
   isProjectWrite,
   planMay,
+  putCard,
   REPORT_LIMIT,
   reviewGuide,
   reviewHeader,
@@ -558,4 +560,43 @@ test('isProjectWrite lets the plan main write outside the project folder and dry
   expect(isProjectWrite('echo x > /Users/me/repo/docs/a.md', root)).toBe(true)
   expect(isProjectWrite('cd /Users/me/repo/docs && rm old.md', root)).toBe(true)
   expect(isProjectWrite('git apply /tmp/fix.patch', root)).toBe(true)
+})
+
+test('activityLine names the tool with its main argument in a few words', () => {
+  expect(activityLine('Read', { file_path: '/Users/me/repo/hooks/register.tsx' })).toBe('Read hooks/register.tsx')
+  expect(activityLine('Edit', { file_path: 'C:\\repo\\hooks\\core.ts' })).toBe('Edit hooks/core.ts')
+  expect(activityLine('Write', { file_path: '/README.md' })).toBe('Write README.md')
+  expect(activityLine('Grep', { pattern: 'agent.spawn', path: 'hooks' })).toBe('Grep "agent.spawn"')
+  expect(activityLine('WebSearch', { query: 'claude code pane' })).toBe('WebSearch "claude code pane"')
+  expect(activityLine('Bash', { command: 'cd hooks\nclaude plugin test .' })).toBe('Bash cd hooks')
+  expect(activityLine('WebFetch', { url: 'https://code.claude.com/docs' })).toBe('WebFetch https://code.claude.com/docs')
+  expect(activityLine('TodoWrite', { todos: [] })).toBe('TodoWrite')
+  // 결과를 메인에 넘기는 내부 도구는 이름 대신 하는 일로 적는다.
+  expect(activityLine('SubagentHandback', { report: '끝났습니다.' })).toBe('결과 보고 중')
+})
+
+test('putCard adds a card, merges fields into an existing one and keeps the list when nothing changed', () => {
+  const first = putCard([], { id: 'A1', type: 'Explore', description: '찾기', model: 'haiku' })
+  expect(first).toEqual([{ id: 'A1', type: 'Explore', description: '찾기', model: 'haiku' }])
+
+  const stepped = putCard(first, { id: 'A1', model: 'claude-haiku-5-5', effort: 'low' })
+  expect(stepped).toEqual([{ id: 'A1', type: 'Explore', description: '찾기', model: 'claude-haiku-5-5', effort: 'low' }])
+  expect(putCard(stepped, { id: 'A1', model: 'claude-haiku-5-5', effort: 'low' })).toBe(stepped)
+
+  // 지금 하는 일은 카드가 아직 없어도 남긴다.
+  expect(putCard([], { id: 'A2', activity: 'Read a.ts' })).toEqual([{ id: 'A2', activity: 'Read a.ts' }])
+})
+
+test('agentArt draws three even rows per agent type, a look of its own for each, and animates', () => {
+  const kinds = ['Explore', 'Plan', 'general-purpose', 'claude-code-guide']
+  const drawn = kinds.map(type => agentArt(type, 0))
+  for (const lines of drawn) {
+    expect(lines).toHaveLength(3)
+    expect(new Set(lines.map(line => line.length)).size).toBe(1)
+  }
+  expect(new Set(drawn.map(lines => lines.join('\n'))).size).toBe(kinds.length)
+  for (const type of kinds) expect(agentArt(type, 0)).not.toEqual(agentArt(type, 2))
+  // 모르는 종류는 band와 같은 Claude 캐릭터로 그린다.
+  expect(agentArt('my-plugin:reviewer', 0)).toEqual(agentArt('claude-code-guide', 0))
+  expect(agentArt('claude-code-guide', 0)[1]).toContain('▝▜█████▛▘')
 })

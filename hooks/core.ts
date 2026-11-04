@@ -1,6 +1,6 @@
 import type { ModelEffort } from 'claude-code'
 
-import type { CommandRun, Review, Role, Task } from '../types'
+import type { AgentCard, CommandRun, Review, Role, Task } from '../types'
 
 // userConfig.logRoot의 기본값. ~는 각자의 홈 폴더로 바뀐다.
 export const DEFAULT_LOG_ROOT = '~/Documents/claude/plan-dev-log'
@@ -365,6 +365,34 @@ export const defaultModel = (subagentType: string, role: Role) =>
     : role === 'plan' && subagentType === 'general-purpose'
       ? 'sonnet'
       : undefined
+
+const CARD_FIELDS = ['type', 'description', 'model', 'effort', 'activity'] as const
+
+// 같은 id의 카드에 덮어쓰거나 새 카드로 더한다. 바뀐 칸이 없으면 같은 목록을 돌려줘 다시 그리지 않게 한다.
+export const putCard = (cards: AgentCard[], card: AgentCard) => {
+  const old = cards.find(one => one.id === card.id)
+  if (old === undefined) return [...cards, card]
+  const merged = { ...old, ...card }
+  return CARD_FIELDS.every(field => old[field] === merged[field])
+    ? cards
+    : cards.map(one => (one === old ? merged : one))
+}
+
+// pane의 '지금 하는 일': 서브에이전트가 방금 부른 도구와 그 주된 인자. 경로는 끝 두 마디, 검색어는 따옴표, 명령은 첫 줄만 쓴다.
+export const activityLine = (tool: string, input: Record<string, unknown>) => {
+  // 서브에이전트가 결과를 메인에 넘기는 내부 도구. 이름이 낯설어 하는 일로 적는다.
+  if (tool === 'SubagentHandback') return '결과 보고 중'
+  const field = (key: string) => {
+    const value = input[key]
+    return typeof value === 'string' ? value : undefined
+  }
+  const path = field('file_path') ?? field('notebook_path')
+  if (path !== undefined) return `${tool} ${path.split(/[\\/]/).filter(Boolean).slice(-2).join('/')}`
+  const search = field('pattern') ?? field('query')
+  if (search !== undefined) return `${tool} "${search}"`
+  const plain = field('command') ?? field('url') ?? field('description')
+  return plain === undefined ? tool : `${tool} ${firstLine(plain)}`
+}
 
 const KST_MS = 9 * 60 * 60 * 1000
 

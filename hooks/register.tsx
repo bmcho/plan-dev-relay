@@ -9,8 +9,9 @@ import type {
 } from 'claude-code'
 
 import type { CommandRun, MainModel, Review, Role, Task, TodoShare } from '../types'
-import { artFor, LABEL_STYLE, ORANGE } from './art'
+import { agentArt, artFor, LABEL_STYLE, ORANGE } from './art'
 import {
+  activityLine,
   AGENT_EFFORT_USAGE,
   agentCap,
   baseName,
@@ -44,6 +45,7 @@ import {
   PLAN_SUBAGENT_DENY,
   planGuide,
   planMay,
+  putCard,
   RELAY_USAGE,
   REPORT_LIMIT,
   REVIEW_MARK,
@@ -97,6 +99,8 @@ export const partner = atom({ plugin: 'plan-dev-relay', key: 'partner' } as cons
 // 기획: 짝 개발 세션의 봉투에서 배운 주소와 이름
 export const devNames = atom({ plugin: 'plan-dev-relay', key: 'devNames' } as const, null)
 export const agents = atom({ plugin: 'plan-dev-relay', key: 'agents' } as const, [])
+// 서브에이전트 pane에 보일 에이전트 정보
+export const agentCards = atom({ plugin: 'plan-dev-relay', key: 'agentCards' } as const, [])
 // 메인 loop의 마지막 모델 요청이 쓴 모델과 effort
 export const mainModel = atom({ plugin: 'plan-dev-relay', key: 'mainModel' } as const, null)
 
@@ -377,6 +381,15 @@ const frameTimer = ($: EngineInterface) => $.clock.every(200, () => void update(
 
 const BUSY = new Set(['pending', 'running', 'waiting'])
 
+// 52칸이면 첫 줄(종류 · 모델 · effort)이 캐릭터 옆에서 잘리지 않는다.
+const AGENT_PANE = { id: 'subagents', title: '서브에이전트', columns: 52 }
+// 터미널이 pane을 오른쪽에 붙이는지(전체 화면). band를 그릴 때 알게 되고, 모르면 undefined다.
+let docks: boolean | undefined
+
+// pane을 못 열어도 다른 일은 계속한다.
+const openAgentPane = ($: EngineInterface) =>
+  $.ui.open(AGENT_PANE).catch(error => $.ui.log(`plan-dev-relay: 서브에이전트 pane 열기 실패: ${String(error)}`))
+
 // 메인 loop가 띄운 서브에이전트 중 아직 일하는 것을 다시 센다. 이것들은 끝나면 엔진이 알림으로 메인을 깨운다.
 // 다른 plugin이 띄운 에이전트, 에이전트가 띄운 에이전트, 팀원, 목록에 없는 엔진의 fork는 메인을 깨운다는 보장이 없어 세지 않는다.
 // ended는 막 turn을 끝낸 에이전트다. 목록의 상태가 늦게 바뀌어도 끝난 것으로 본다.
@@ -392,9 +405,17 @@ const refreshAgents = async ($: EngineInterface, ended?: string) => {
     .filter(agent => agent.parentId === undefined && agent.spawnedBy === undefined && agent.teammateId === undefined)
     .filter(agent => BUSY.has(agent.status) && agent.id !== ended)
     .map(agent => agent.id)
+  const before = await read($, agents)
   await update($, agents, old =>
     old.length === ids.length && old.every((id, index) => id === ids[index]) ? old : ids,
   )
+  // 끝난 에이전트의 카드만 지운다. 목록에 아직 오르지 않은 막 띄운 에이전트의 카드는 남긴다.
+  const done = new Set(list.filter(agent => !BUSY.has(agent.status)).map(agent => agent.id))
+  if (ended !== undefined) done.add(ended)
+  await update($, agentCards, cards => (cards.some(card => done.has(card.id)) ? cards.filter(card => !done.has(card.id)) : cards))
+  // 일하는 서브에이전트가 생기면 pane을 열고, 모두 끝나면 닫는다. 전체 화면이 아니면 오른쪽 자리가 없어 저절로 열지 않는다.
+  if (before.length === 0 && ids.length > 0 && docks !== false) void openAgentPane($)
+  if (before.length > 0 && ids.length === 0) void $.ui.close({ id: AGENT_PANE.id }).catch(() => undefined)
   return ids
 }
 
@@ -446,7 +467,7 @@ export const register: Register = (on, options) => {
     // 다시 불러오거나 이어 연 세션에 지난 에이전트 목록이 남지 않게 다시 센다.
     // 다시 불러오면 타이머가 사라지므로, 에이전트가 일하는 중이면 캐릭터를 다시 움직인다.
     const working = await refreshAgents($)
-    if (working.length > 0 && (await read($, role)) !== null) timer ??= frameTimer($)
+    if (working.length > 0) timer ??= frameTimer($)
     // hot reload 뒤에도 역할은 남아 있다. 2초 확인을 다시 켠다.
     if ((await read($, role)) !== null) {
       poll?.cancel()
@@ -472,7 +493,8 @@ export const register: Register = (on, options) => {
     }
 
     if (arg === 'off') {
-      stopFrames()
+      // 서브에이전트 pane의 캐릭터는 역할이 없어도 움직이므로, 일하는 에이전트가 있으면 타이머를 남긴다.
+      if ((await read($, agents)).length === 0) stopFrames()
       poll?.cancel()
       poll = undefined
       const mine = await read($, role)
@@ -551,7 +573,11 @@ export const register: Register = (on, options) => {
   // 설정을 못 바꾸면($.config.set이 거절하거나 실패하면) 이유를 보인다.
   on('command.run', { command: 'subagents' }, async ($, e) => {
     const arg = e.args.trim()
-    if (arg === '') return { text: `서브에이전트 상한: ${cap === 0 ? '없음' : `${cap}개`}. ${SUBAGENTS_USAGE}` }
+    if (arg === '') {
+      // 사람이 연 pane이라 터미널 폭과 관계없이 열린다.
+      await openAgentPane($)
+      return { text: `서브에이전트 상한: ${cap === 0 ? '없음' : `${cap}개`}. ${SUBAGENTS_USAGE}` }
+    }
     const next = parseCap(arg)
     if (next === null) return { text: SUBAGENTS_USAGE }
     const done = next === 0 ? '서브에이전트 상한을 없앴습니다.' : `서브에이전트 상한을 ${next}개로 바꿨습니다.`
@@ -692,6 +718,18 @@ export const register: Register = (on, options) => {
     if (mine === 'plan' && !planMay(e.tool, e.tool === 'Bash' ? e.command : undefined, isSubagent, root)) {
       return { deny: isSubagent ? PLAN_SUBAGENT_DENY : PLAN_MAIN_DENY }
     }
+    // pane의 '지금 하는 일'. 남기지 못해도 도구 호출은 막지 않는다(아래 .catch는 기획 세션에서 호출을 막는다).
+    const agentId = e.agentId
+    if (agentId !== undefined) {
+      try {
+        if ((await read($, agents)).includes(agentId)) {
+          const activity = activityLine(e.tool, e)
+          await update($, agentCards, cards => putCard(cards, { id: agentId, activity }))
+        }
+      } catch (error) {
+        $.ui.log(`plan-dev-relay: 서브에이전트의 지금 하는 일 기록 실패: ${String(error)}`)
+      }
+    }
     const ran = await next(e)
     const current = await read($, task)
     const isOk = ran.deny === undefined && ran.isError !== true
@@ -728,25 +766,37 @@ export const register: Register = (on, options) => {
   }).catch(async ($, e, next) => (next.called || (await read($, role)) !== 'plan' ? next(e) : { deny: PLAN_GUARD_FAILED }))
 
   on('agent.spawn', async ($, e, next) => {
-    // 메인 loop가 새로 띄우는 서브에이전트만 다룬다. 팀원, 워크플로 에이전트, 이어 하기는 그대로 둔다.
-    const isNew =
-      e.parentAgentId === undefined && e.isTeammate === undefined && e.workflow === undefined && e.resume === undefined
+    const isMain = e.parentAgentId === undefined && e.isTeammate === undefined && e.workflow === undefined
     const mine = await read($, role)
-    if (!isNew || mine === null) return next(e)
 
-    // 호출이 model을 비운 엔진 서브에이전트는 종류와 역할에 맞는 기본 모델로 띄운다.
-    const model = e.model ?? (e.provider.plugin === 'engine' ? defaultModel(e.subagentType, mine) : undefined)
-    const spawn = model === e.model ? e : { ...e, model }
-    if (cap === 0) return next(spawn)
-    const started = spawning.then(async () => {
-      // 앞 spawn을 기다리는 동안 이 호출이 버려졌으면(사용자 중단, 시간 초과) 띄우지 않는다.
-      if (next.signal.aborted) return { deny: '에이전트 호출이 중단되었습니다.' }
-      if ((await refreshAgents($)).length < cap) return next(spawn)
-      return {
-        deny: `동시에 일하는 서브에이전트가 상한 ${cap}개에 닿았습니다. 일하는 에이전트가 끝난 뒤 다시 띄우거나 직접 하세요.`,
-      }
-    })
-    spawning = started.catch(() => undefined)
+    // 모델 기본값과 상한은 메인 loop가 새로 띄우는 서브에이전트에만 적용한다. 팀원, 워크플로 에이전트, 이어 하기는 그대로 둔다.
+    const launch = async () => {
+      if (!isMain || e.resume !== undefined || mine === null) return next(e)
+
+      // 호출이 model을 비운 엔진 서브에이전트는 종류와 역할에 맞는 기본 모델로 띄운다.
+      const model = e.model ?? (e.provider.plugin === 'engine' ? defaultModel(e.subagentType, mine) : undefined)
+      const spawn = model === e.model ? e : { ...e, model }
+      if (cap === 0) return next(spawn)
+      const queued = spawning.then(async () => {
+        // 앞 spawn을 기다리는 동안 이 호출이 버려졌으면(사용자 중단, 시간 초과) 띄우지 않는다.
+        if (next.signal.aborted) return { deny: '에이전트 호출이 중단되었습니다.' }
+        if ((await refreshAgents($)).length < cap) return next(spawn)
+        return {
+          deny: `동시에 일하는 서브에이전트가 상한 ${cap}개에 닿았습니다. 일하는 에이전트가 끝난 뒤 다시 띄우거나 직접 하세요.`,
+        }
+      })
+      spawning = queued.catch(() => undefined)
+      return queued
+    }
+
+    // pane에는 메인 loop가 띄우거나 이어 하는 서브에이전트를 역할과 관계없이 보인다.
+    const started = await launch()
+    const id = started.agentId
+    if (!isMain || id === undefined) return started
+    const card = { id, type: e.subagentType, description: e.description, model: started.model }
+    await update($, agentCards, cards => putCard(cards, card))
+    // 에이전트가 첫 turn을 열기 전에도 pane에 보이게 다시 센다.
+    await refreshAgents($)
     return started
   })
 
@@ -763,13 +813,19 @@ export const register: Register = (on, options) => {
       e.agentId === undefined || e.effort === undefined || mine === null
         ? undefined
         : effortFor(e.model, efforts.levels)
+    // pane에는 메인이 띄운 서브에이전트가 실제로 요청한 모델과 effort를 보인다.
+    const agentId = e.agentId
+    if (agentId !== undefined && (await read($, agents)).includes(agentId)) {
+      await update($, agentCards, cards => putCard(cards, { id: agentId, model: e.model, effort: level ?? e.effort }))
+    }
     return yield* next(level === undefined ? e : { ...e, effort: level })
   })
 
   on('turn.start', async ($, e, next) => {
     if (e.agentId === undefined) isMainTurn = true
     const working = await refreshAgents($)
-    if ((await read($, role)) !== null && (isMainTurn || working.length > 0)) timer ??= frameTimer($)
+    // 서브에이전트 pane의 캐릭터는 역할이 없어도 움직인다. band의 캐릭터는 역할이 있을 때만 그린다.
+    if (working.length > 0 || (isMainTurn && (await read($, role)) !== null)) timer ??= frameTimer($)
     return next(e)
   })
 
@@ -799,6 +855,7 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    docks = e.viewport?.isFullscreen
     const mine = await read($, role)
     if (mine === null || e.props.hasSurvey) return next(e)
 
@@ -871,6 +928,54 @@ export const register: Register = (on, options) => {
             </Box>
           ))}
         </Box>
+      </Box>
+    )
+  })
+
+  // 메인이 띄운 서브에이전트마다 종류별 캐릭터 옆에 종류 · 모델 · effort, 짧은 설명, 지금 하는 일을 보인다.
+  on('ui.render', { component: 'Pane', requestId: AGENT_PANE.id }, async ($, e) => {
+    const ids = await read($, agents)
+    const cards = await read($, agentCards)
+    // 일하는 에이전트가 있을 때만 frame을 읽어 구독한다. 비어 있으면 다시 그리지 않는다.
+    const now = ids.length > 0 ? await read($, frame) : 0
+    const { Box, Text } = $.ui.resolve(e)
+
+    return (
+      <Box flexDirection="column">
+        <Text bold>{ids.length === 0 ? '일하는 서브에이전트 없음' : `일하는 서브에이전트 ${ids.length}개`}</Text>
+        {ids.map(id => {
+          const card = cards.find(one => one.id === id)
+          return (
+            <Box flexDirection="row" marginTop={1}>
+              {/* 데스크톱은 Text를 비례 글꼴로 그리므로 캐릭터는 고정폭(mono)으로 그린다. */}
+              <Box flexDirection="column" flexShrink={0}>
+                {agentArt(card?.type ?? '', now).map(line => (
+                  <Text color={ORANGE} mono>
+                    {line}
+                  </Text>
+                ))}
+              </Box>
+              <Box flexDirection="column" marginLeft={1}>
+                <Box flexDirection="row">
+                  <Box flexShrink={0}>
+                    <Text bold>{card?.type ?? id}</Text>
+                  </Box>
+                  {card?.model !== undefined && (
+                    <Text dimColor wrap="truncate-end">
+                      {` · ${modelLine(card.model, card.effort)}`}
+                    </Text>
+                  )}
+                </Box>
+                {card?.description !== undefined && <Text wrap="truncate-end">{card.description}</Text>}
+                {card?.activity !== undefined && (
+                  <Text dimColor wrap="truncate-end">
+                    {`⎿ ${card.activity}`}
+                  </Text>
+                )}
+              </Box>
+            </Box>
+          )
+        })}
       </Box>
     )
   })

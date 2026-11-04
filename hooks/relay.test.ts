@@ -15,6 +15,8 @@ type World = {
   sends: { to: string; text: string }[]
   toasts: string[]
   uiLogs: string[]
+  // $.ui.open과 $.ui.close로 열고 닫은 pane ('open:<id>', 'close:<id>')
+  panes: string[]
   // 전송 실패를 흉내 낸다: refuse는 isDelivered false, sendThrows는 예외.
   refuse?: string
   sendThrows?: boolean
@@ -73,6 +75,14 @@ const engine = (on: On, sessionId: string, world: World) => {
     return { value: undefined }
   })
   on('command.register', () => ({ value: {} as never }))
+  on('ui.open', ($, e) => {
+    world.panes.push(`open:${e.id}`)
+    return { value: { isPlaced: true } as never }
+  })
+  on('ui.close', ($, e) => {
+    world.panes.push(`close:${e.id}`)
+    return { value: undefined }
+  })
   on('session.receive', ($, e) => ({ text: e.text }))
   on('prompt.submit', ($, e) => ({ text: e.text, context: e.context }))
   on('turn.start', ($, e) => ({ turnId: e.turnId }))
@@ -98,7 +108,7 @@ const engine = (on: On, sessionId: string, world: World) => {
   return clock
 }
 
-const newWorld = (): World => ({ files: new Map(), sends: [], toasts: [], uiLogs: [] })
+const newWorld = (): World => ({ files: new Map(), sends: [], toasts: [], uiLogs: [], panes: [] })
 
 const tag = (role: 'plan' | 'dev', sessionId: string, text: string) =>
   `[plan-dev-relay role=${role} session=${sessionId}]\n${text}`
@@ -1802,4 +1812,192 @@ test('/role starts the To-Do list over', async ($, on) => {
   await $.command.run({ command: 'role', args: 'plan' } as never)
   await clock.advance(2000)
   expect(shared(world, TODO_PLAN)).toEqual({ sessionId: 'S-PLAN', todos: [], relay: [], todoFor: null })
+})
+
+// 서브에이전트 pane
+const AGENT_PANE = {
+  plugin: 'plan-dev-relay',
+  component: 'Pane',
+  requestId: 'subagents',
+  props: {
+    title: '서브에이전트',
+    isFocused: false,
+    bodyColumns: 40,
+    placement: 'dock',
+    scroll: { offset: 0, bodyRows: 30 },
+    view: {},
+  },
+} as const
+
+test('a session without a role opens the subagent pane with each agent and closes it when they finish', async ($, on) => {
+  const world = newWorld()
+  engine(on, 'S-X', world)
+  spawner(on, world)
+  stepper(on)
+
+  await spawn($, 'Explore', { description: '서브에이전트 띄우는 곳 찾기' })
+  await step($, 'claude-haiku-5-5', 'low', 'A1')
+  await $.tool.call({ tool: 'Grep', pattern: 'agent.spawn', agentId: 'A1' } as never)
+
+  expect(world.panes).toEqual(['open:subagents'])
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const pane = await $.ui.mount({ ...AGENT_PANE, surface })
+    expect((await pane.find({ type: 'Text', text: /일하는 서브에이전트/ }))?.text).toBe('일하는 서브에이전트 1개')
+    // 종류에 맞는 캐릭터 옆에 종류 · 모델 · effort, 짧은 설명, 지금 하는 일을 보인다. 프롬프트는 보이지 않는다.
+    expect(await pane.find({ type: 'Text', text: /▗▛███▜▖/ })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /^Explore$/ })).toBeDefined()
+    expect((await pane.find({ type: 'Text', text: /haiku/ }))?.text).toBe(' · haiku-5-5 · low')
+    expect(await pane.find({ type: 'Text', text: /^서브에이전트 띄우는 곳 찾기$/ })).toBeDefined()
+    expect((await pane.find({ type: 'Text', text: /^⎿/ }))?.text).toBe('⎿ Grep "agent.spawn"')
+    expect(await pane.find({ type: 'Text', text: /조사해 줘/ })).toBeUndefined()
+    await pane.unmount()
+  }
+
+  // 마지막 에이전트가 끝나면 pane을 닫고 카드도 지운다.
+  world.agents = [agent('A1', 'completed')]
+  await agentEnd($, 'A1')
+  expect(world.panes).toEqual(['open:subagents', 'close:subagents'])
+  const empty = await $.ui.mount({ ...AGENT_PANE, surface: 'terminal' })
+  expect(await empty.find({ type: 'Text', text: /일하는 서브에이전트 없음/ })).toBeDefined()
+  expect(await empty.find({ type: 'Text', text: /Explore/ })).toBeUndefined()
+  await empty.unmount()
+})
+
+test('the subagent pane shows the default model a relay session picked and the effort it set', async ($, on) => {
+  const world = newWorld()
+  spawner(on, world)
+  stepper(on)
+  await planWithDev($, on, world)
+
+  await spawn($, 'general-purpose')
+  const pane = await $.ui.mount({ ...AGENT_PANE, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: /^ · sonnet$/ })).toBeDefined()
+  await pane.unmount()
+
+  await step($, 'claude-sonnet-5-5', 'max', 'A1')
+  const stepped = await $.ui.mount({ ...AGENT_PANE, surface: 'terminal' })
+  expect(await stepped.find({ type: 'Text', text: /sonnet-5-5 · high/ })).toBeDefined()
+  await stepped.unmount()
+})
+
+test('the subagent pane leaves out agents the main loop did not spawn', async ($, on) => {
+  const world = newWorld()
+  engine(on, 'S-X', world)
+  spawner(on, world)
+
+  await spawn($, 'Explore', { parentAgentId: 'A0' })
+  world.agents = [agent('A1', 'running', { parentId: 'A0' })]
+  await agentStart($, 'A1')
+
+  expect(world.panes).toEqual([])
+  const pane = await $.ui.mount({ ...AGENT_PANE, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: /일하는 서브에이전트 없음/ })).toBeDefined()
+  await pane.unmount()
+})
+
+test('the subagent pane does not open by itself outside the fullscreen layout, but /subagents opens it', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  engine(on, 'S-DEV', world)
+  spawner(on, world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+
+  // 터미널의 기본 화면(전체 화면이 아님)에서 band를 그린다.
+  const band = await $.ui.mount({ ...BAND, surface: 'terminal', viewport: { columns: 200, rows: 50, isFullscreen: false } } as never)
+  await band.unmount()
+  await spawn($, 'Explore')
+  expect(world.panes).toEqual([])
+
+  await $.command.run({ command: 'subagents', args: '' } as never)
+  expect(world.panes).toEqual(['open:subagents'])
+})
+
+test('the subagent pane is a tree every surface draws, the desktop app included', async ($, on) => {
+  const world = newWorld()
+  engine(on, 'S-X', world)
+  spawner(on, world)
+  stepper(on)
+  await spawn($, 'Plan', { description: 'README 설치 절차 검토' })
+  await step($, 'claude-opus-5-5', 'high', 'A1')
+  await $.tool.call({ tool: 'Read', file_path: '/Users/bmcho/Documents/git/control-center/README.md', agentId: 'A1' } as never)
+
+  for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
+    // drawn()은 그 화면이 그릴 수 없는 트리면 거절한다.
+    const pane = await $.ui.mount({ ...AGENT_PANE, surface })
+    expect(await pane.drawn()).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /^Plan$/ })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /opus-5-5 · high/ })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /^README 설치 절차 검토$/ })).toBeDefined()
+    expect(await pane.find({ type: 'Text', text: /^⎿ Read control-center\/README.md$/ })).toBeDefined()
+    // 데스크톱은 Text를 비례 글꼴로 그리므로 캐릭터는 고정폭(mono)으로 그려야 줄이 맞는다.
+    expect((await pane.find({ type: 'Text', text: /▐▀███▀▌/ }))?.props?.mono).toBe(true)
+    await pane.unmount()
+  }
+})
+
+test('on the desktop app the pane opens by itself where the app docks panes', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  engine(on, 'S-DEV', world)
+  spawner(on, world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+
+  // 데스크톱 앱은 pane 폭을 코드 글꼴 한 칸 기준으로 재고, pane을 옆에 붙이는지 알려 준다.
+  const band = await $.ui.mount({ ...BAND, surface: 'desktop', viewport: { columns: 120, rows: 40, isFullscreen: true } } as never)
+  await band.unmount()
+  await spawn($, 'Explore')
+
+  expect(world.panes).toEqual(['open:subagents'])
+})
+
+test('subagent characters move while their agents work, even in a session without a role', async ($, on) => {
+  const world = newWorld()
+  const clock = engine(on, 'S-X', world)
+  spawner(on, world)
+
+  await spawn($, 'Plan')
+  await agentStart($, 'A1')
+  const first = await $.ui.mount({ ...AGENT_PANE, surface: 'terminal' })
+  expect(await first.find({ type: 'Text', text: /─☐☐☐/ })).toBeDefined()
+  await first.unmount()
+
+  // 체크리스트가 하나씩 채워진다.
+  await clock.advance(400)
+  const later = await $.ui.mount({ ...AGENT_PANE, surface: 'terminal' })
+  expect(await later.find({ type: 'Text', text: /─☑☐☐/ })).toBeDefined()
+  await later.unmount()
+})
+
+test('the pane keeps what each main-loop agent is doing now and nothing for other loops', async ($, on) => {
+  const world = newWorld()
+  engine(on, 'S-X', world)
+  spawner(on, world)
+
+  await spawn($, 'general-purpose', { description: '테스트 돌리기' })
+  await $.tool.call({ tool: 'Read', file_path: 'hooks/core.ts', agentId: 'A1' } as never)
+  await $.tool.call({ tool: 'Bash', command: 'claude plugin test .', agentId: 'A1' } as never)
+  // 메인 loop의 호출과 메인이 띄우지 않은 에이전트의 호출은 남기지 않는다.
+  await $.tool.call({ tool: 'Read', file_path: 'README.md' } as never)
+  await $.tool.call({ tool: 'Read', file_path: 'README.md', agentId: 'C9' } as never)
+
+  const pane = await $.ui.mount({ ...AGENT_PANE, surface: 'terminal' })
+  expect((await pane.findAll({ type: 'Text', text: /^⎿/ })).map(row => row.text)).toEqual(['⎿ Bash claude plugin test .'])
+  await pane.unmount()
+})
+
+test('/role off leaves the subagent characters moving while agents still work', async ($, on) => {
+  const world = newWorld()
+  setRoles(world)
+  const clock = engine(on, 'S-DEV', world)
+  spawner(on, world)
+  await $.command.run({ command: 'role', args: 'dev' } as never)
+
+  await spawn($, 'Plan')
+  await agentStart($, 'A1')
+  await $.command.run({ command: 'role', args: 'off' } as never)
+  await clock.advance(400)
+
+  const pane = await $.ui.mount({ ...AGENT_PANE, surface: 'terminal' })
+  expect(await pane.find({ type: 'Text', text: /─☑☐☐/ })).toBeDefined()
+  await pane.unmount()
 })
