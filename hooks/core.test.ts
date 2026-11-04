@@ -546,6 +546,24 @@ test('isProjectWrite lets the plan main read, build, test and use temp folders',
   }
 })
 
+test('temp folder variables the command does not assign count as temp folders', () => {
+  for (const command of [
+    'echo x > "$CLAUDE_JOB_DIR/tmp/t.txt"',
+    'echo x > ${CLAUDE_JOB_DIR}/tmp/a',
+    'echo x > $TMPDIR/a',
+    'echo x > "$TMP/a"',
+    'echo x > $TEMP/a',
+    'claude plugin test . > "$CLAUDE_JOB_DIR/tmp/t.txt" 2>&1',
+  ]) {
+    expect({ command, ok: isReadOnlyCommand(command) }).toEqual({ command, ok: true })
+    expect({ command, write: isProjectWrite(command, '/Users/me/repo') }).toEqual({ command, write: false })
+  }
+  expect(isReadOnlyCommand('echo x > $CLAUDE_JOB_DIR/a')).toBe(false)
+  expect(isReadOnlyCommand('echo x > $TMPX/a')).toBe(false)
+  expect(isReadOnlyCommand('CLAUDE_JOB_DIR=. ; echo x > $CLAUDE_JOB_DIR/tmp/a')).toBe(false)
+  expect(isProjectWrite('CLAUDE_JOB_DIR=. ; echo x > $CLAUDE_JOB_DIR/tmp/a', '/Users/me/repo')).toBe(true)
+})
+
 test('the shell reading follows variables, cd into temp folders, wrappers and process substitution', () => {
   // 읽기 검사(서브에이전트)
   expect(isReadOnlyCommand('T=/tmp/review; grep -rn x src > $T/out.txt')).toBe(true)

@@ -83,6 +83,8 @@ const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/
 const WRAPPERS = new Set(['caffeinate', 'nice', 'timeout', 'env', 'command'])
 // 쓰기를 허용하는 곳: 임시 폴더(/tmp, macOS의 TMPDIR, Claude Code 작업 폴더의 tmp)
 const TMP_PATH = /^(?:\/tmp\/|\/private\/tmp\/|\/var\/folders\/|\S*\/\.claude\/jobs\/[^/]+\/tmp(?:\/|$))/
+// 이 명령에서 대입하지 않아 expand가 그대로 둔 임시 폴더 변수(${이름}은 $이름으로 바꿔 본다)
+const TMP_VAR = /^\$(?:TMPDIR|TMP|TEMP|CLAUDE_JOB_DIR\/tmp)(?:\/|$)/
 // 지워도 되는 빌드 산출물(기획 메인만)
 const BUILD_OUTPUT = /(?:^|\/)(?:build|dist|target|out|node_modules|\.gradle|coverage)(?:\/|$)/
 // 출력 돌리기 표시. splitCommand가 대상 경로 앞에 붙여 두고, 단어를 읽을 때 따로 본다.
@@ -207,7 +209,7 @@ const expand = (word: string, state: ShellState) =>
 // 경로가 바깥(임시 폴더, 또는 root 밖)인지. 상대 경로는 지금 바깥에 있을 때만 그렇다. ~ 경로는 root 밖으로 본다.
 const isTemp = (word: string, state: ShellState) => {
   const path = expand(word, state)
-  if (TMP_PATH.test(path)) return true
+  if (TMP_PATH.test(path) || TMP_VAR.test(path.replace(/^\$\{(\w+)\}/, '$$$1'))) return true
   if (!/^[/~$]/.test(path)) return state.inTemp
   const { root } = state
   return root !== undefined && !path.startsWith('$') && path !== root && !path.startsWith(`${root}/`)
