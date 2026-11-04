@@ -522,6 +522,7 @@ plan-dev-relay/
 │   ├── core.test.ts       # core.ts, art.ts 테스트
 │   ├── todo.test.ts       # todo.ts 테스트
 │   └── relay.test.ts      # 엔진 수준 시나리오 테스트
+├── LICENSE                # MIT 라이선스
 └── types/index.d.ts       # $.state 값의 타입 계약
 ```
 
