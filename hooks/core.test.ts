@@ -439,6 +439,12 @@ test('isReadOnlyCommand lets search and git reading through', () => {
     'go test ./...',
     'mvn -q test',
     'pytest -q tests',
+    'claude plugin test .',
+    'claude plugin validate --strict .',
+    'git remote',
+    'git remote -v',
+    'git remote get-url origin',
+    'git remote show origin',
   ]) {
     expect({ command, ok: isReadOnlyCommand(command) }).toEqual({ command, ok: true })
   }
@@ -473,6 +479,14 @@ test('isReadOnlyCommand stops commands that write or run unknown programs', () =
     'npm run build',
     'npm test -- -u',
     "sed -n 'w out.txt' a.md",
+    'claude',
+    'claude plugin install x',
+    'claude plugin configure x',
+    'claude plugin marketplace add x',
+    'git remote add o u',
+    'git remote -v add o u',
+    'git remote set-url origin u',
+    'git remote remove origin',
   ]) {
     expect({ command, ok: isReadOnlyCommand(command) }).toEqual({ command, ok: false })
   }
@@ -488,6 +502,8 @@ test('planMay keeps editing tools from subagents and writing Bash from the whole
     expect(planMay('Bash', 'git push', isSubagent, '/r')).toBe(false)
     expect(planMay('Bash', 'grep -rn x src', isSubagent, '/r')).toBe(true)
     expect(planMay('Bash', './gradlew test', isSubagent, '/r')).toBe(true)
+    expect(planMay('Bash', 'claude plugin validate --strict .', isSubagent, '/r')).toBe(true)
+    expect(planMay('Bash', 'git remote -v', isSubagent, '/r')).toBe(true)
     expect(planMay('Read', undefined, isSubagent, '/r')).toBe(true)
   }
   // 빌드와 모르는 명령은 메인만 된다.

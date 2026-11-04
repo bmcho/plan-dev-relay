@@ -71,6 +71,7 @@ const READ_COMMANDS = new Set([
 const READ_GIT = new Set([
   'log', 'diff', 'show', 'status', 'blame', 'grep', 'ls-files', 'ls-tree', 'rev-parse', 'describe', 'shortlog', 'cat-file',
 ])
+const READ_REMOTE = new Set(['', 'show', 'get-url'])
 const WRITE_FIND = /^-(exec|execdir|ok|okdir|delete|fprint0?|fprintf|fls)$/
 // sed의 w 명령(파일에 쓴다): 'w 파일', s/a/b/w 파일
 const SED_WRITE = /(?:^|[\s;{}'"/])w\s+[^\s'";}]/
@@ -240,7 +241,7 @@ const gitOf = (args: string[]) => {
     if (args[i] === '-C') dir = args[i + 1]
     i += args[i] === '-C' || args[i] === '-c' ? 2 : 1
   }
-  return { sub: args[i] ?? '', dir }
+  return { sub: args[i] ?? '', dir, rest: args.slice(i + 1) }
 }
 
 const inlinePython = (args: string[], part: string, bodies: string[]) => {
@@ -259,6 +260,7 @@ const isTestRun = (name: string, args: string[]) => {
   }
   if (name === 'go' || name === 'cargo') return plain[0] === 'test'
   if (name === 'mvn') return plain.length > 0 && plain.every(goal => goal === 'test' || goal === 'verify')
+  if (name === 'claude') return plain[0] === 'plugin' && (plain[1] === 'test' || plain[1] === 'validate')
   return name === 'pytest'
 }
 
@@ -284,7 +286,9 @@ const isReadOnlyPart = (part: string, bodies: string[], state: ShellState) => {
   if (name === 'find') return !args.some(arg => WRITE_FIND.test(arg))
   if (name === 'awk') return !part.includes('system(')
   if (name === 'git') {
-    const { sub } = gitOf(args)
+    const { sub, rest } = gitOf(args)
+    // git remote는 목록·show·get-url만 읽기다. add, set-url 등은 설정을 바꾼다.
+    if (sub === 'remote') return READ_REMOTE.has(rest.find(arg => !arg.startsWith('-')) ?? '')
     return READ_GIT.has(sub) && !args.some(arg => arg.startsWith('--output'))
   }
   return true
