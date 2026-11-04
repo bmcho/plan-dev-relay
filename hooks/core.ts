@@ -246,6 +246,17 @@ const gitOf = (args: string[]) => {
   return { sub: args[i] ?? '', dir, rest: args.slice(i + 1) }
 }
 
+// git stash·tag 중 읽기만 하는 형태: stash list·show(--output으로 파일을 쓰지 않을 때), 인자 없는 tag,
+// -d·--delete 없는 tag -l·--list. 그 밖의 stash·tag는 바꾸는 것으로 본다. 서브에이전트와 기획 메인 검사가 함께 쓴다.
+const isStashTagRead = (sub: string, rest: string[]) => {
+  if (sub === 'stash') {
+    const action = rest.find(arg => !arg.startsWith('-')) ?? ''
+    return (action === 'list' || action === 'show') && !rest.some(arg => arg.startsWith('--output'))
+  }
+  const listing = rest.some(arg => arg === '-l' || arg === '--list') && !rest.some(arg => arg === '-d' || arg === '--delete')
+  return sub === 'tag' && (rest.length === 0 || listing)
+}
+
 const inlinePython = (args: string[], part: string, bodies: string[]) => {
   const inline = args.indexOf('-c')
   const heredoc = /HEREDOC(\d+)/.exec(part)
@@ -291,6 +302,7 @@ const isReadOnlyPart = (part: string, bodies: string[], state: ShellState) => {
     const { sub, rest } = gitOf(args)
     // git remote는 목록·show·get-url만 읽기다. add, set-url 등은 설정을 바꾼다.
     if (sub === 'remote') return READ_REMOTE.has(rest.find(arg => !arg.startsWith('-')) ?? '')
+    if (isStashTagRead(sub, rest)) return true
     return READ_GIT.has(sub) && !args.some(arg => arg.startsWith('--output'))
   }
   return true
@@ -317,13 +329,14 @@ const isWritePart = (part: string, bodies: string[], state: ShellState) => {
     return !(written.length > 0 && written.every(safe))
   }
   if (name === 'git') {
-    const { sub, dir } = gitOf(args)
+    const { sub, dir, rest } = gitOf(args)
     const where = dir === undefined ? state.inTemp : isTemp(dir, state)
-    // git apply --check·--stat은 바꾸지 않고 확인만 한다.
+    // git apply --check·--stat은 바꾸지 않고 확인만 한다. stash list·show, tag 목록은 읽기다.
     const dryRun = sub === 'apply' && args.some(arg => /^--(?:check|stat|numstat|summary)$/.test(arg))
     return (
       !where &&
       !dryRun &&
+      !isStashTagRead(sub, rest) &&
       (GIT_WRITE.has(sub) || (sub === 'branch' && args.some(arg => /^-(?:[dDmM]|-delete|-move)$/.test(arg))))
     )
   }

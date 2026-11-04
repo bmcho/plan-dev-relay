@@ -546,6 +546,36 @@ test('isProjectWrite lets the plan main read, build, test and use temp folders',
   }
 })
 
+test('git stash list·show and tag listing are reads, other stash and tag forms are writes', () => {
+  // 서브에이전트(isReadOnlyCommand)와 기획 메인(isProjectWrite)이 같은 판정을 쓴다.
+  for (const command of [
+    'git stash list',
+    'git stash show -p stash@{0}',
+    'git -C /Users/me/repo stash list',
+    'git tag',
+    'git tag -l',
+    "git tag --list 'v*'",
+  ]) {
+    expect({ command, ok: isReadOnlyCommand(command), write: isProjectWrite(command, '/Users/me/repo') })
+      .toEqual({ command, ok: true, write: false })
+  }
+  for (const command of [
+    'git stash',
+    'git stash push -m x',
+    'git stash pop',
+    'git stash drop',
+    'git stash clear',
+    'git stash show -p --output=a.patch',
+    'git tag v1',
+    'git tag -a v1 -m x',
+    'git tag -d v1',
+    'git tag -l -d v1',
+  ]) {
+    expect({ command, ok: isReadOnlyCommand(command), write: isProjectWrite(command, '/Users/me/repo') })
+      .toEqual({ command, ok: false, write: true })
+  }
+})
+
 test('temp folder variables the command does not assign count as temp folders', () => {
   for (const command of [
     'echo x > "$CLAUDE_JOB_DIR/tmp/t.txt"',
