@@ -62,8 +62,8 @@ Claude Code 세션 두 개를 **기획 세션**과 **개발 세션**으로 짝�
 - 검수 뒤에 기획 세션이 어디까지 스스로 할지는 `/relay`로 정합니다(수동, 오토, 풀오토). 자세한 내용은 [검수와 진행 모드](#검수와-진행-모드-relay)를 보세요.
 - 개발 세션이 아닌 다른 수신자에게 보내는 메시지는 표식만 붙여 그대로 보냅니다.
 - 기획 세션이 고치는 일을 직접 하지 못하게 막고, 거절할 때 이유를 돌려줍니다.
-  - 기획 메인: Bash로 프로젝트 파일을 지우거나 옮기거나 고치는 명령(rm, mv, cp, `sed -i`, 파일을 쓰는 python, 임시 폴더가 아닌 곳으로의 `>`)과 git add·commit·push·checkout 같은 변경을 막습니다. 읽기, 빌드, 테스트와 프로젝트 폴더 밖(임시 폴더, Claude 메모리 등)의 일은 됩니다. git stash list·show와 git tag 목록(인자 없음, `-l`·`--list`)은 읽기라 됩니다. 빌드 산출물(`build` 등)은 지울 수 있습니다. Write·Edit는 계획 문서를 써야 해서 막지 않습니다.
-  - 서브에이전트: 더 좁게, Bash는 읽기 명령(grep, rg, find, cat, sed -n, git log·diff·show 등), 테스트·검증 실행(gradle test, npm test, pytest, go test, claude plugin test·validate 등), git remote(목록, show, get-url만), git stash list·show, git tag(목록만), 임시 폴더(/tmp, `$TMPDIR`, `$CLAUDE_JOB_DIR/tmp` 등) 쓰기만 됩니다. python은 명령 안의 코드(`-c`, 여기 문서)가 파일을 쓰지 않을 때만 됩니다. Edit, Write, NotebookEdit, Monitor도 쓸 수 없습니다.
+  - 기획 메인: Bash로 프로젝트 파일을 지우거나 옮기거나 고치는 명령(rm, mv, cp, `sed -i`, 파일을 쓰는 python, 임시 폴더가 아닌 곳으로의 `>`)과 git add·commit·push·checkout 같은 변경을 막습니다. 읽기, 빌드, 테스트와 프로젝트 폴더 밖(임시 폴더, Claude 메모리 등)의 일은 됩니다. git stash list·show(stash 바로 뒤에 올 때)와 git tag 목록(인자 없음, 또는 tag 바로 뒤의 `-l`·`--list`)은 읽기라 됩니다. 빌드 산출물(`build` 등)은 지울 수 있습니다. Write·Edit는 계획 문서를 써야 해서 막지 않습니다.
+  - 서브에이전트: 더 좁게, Bash는 읽기 명령(grep, rg, find, cat, sed -n, git log·diff·show 등), 테스트·검증 실행(gradle test, npm test, pytest, go test, claude plugin test·validate 등), git remote(목록, show, get-url만), git stash list·show(stash 바로 뒤에 올 때), git tag 목록(인자 없음, 또는 tag 바로 뒤의 `-l`·`--list`), 임시 폴더(/tmp, `$TMPDIR`, `$CLAUDE_JOB_DIR/tmp` 등) 쓰기만 됩니다. python은 명령 안의 코드(`-c`, 여기 문서)가 파일을 쓰지 않을 때만 됩니다. Edit, Write, NotebookEdit, Monitor도 쓸 수 없습니다.
   - 이 Claude Code에는 Grep·Glob 도구가 없어 찾기도 Bash로 하므로, Bash를 통째로 막지 않고 명령을 읽어서 가립니다. 셸 문법과 python 코드를 흔한 모양으로만 읽으므로 보안 장치는 아닙니다.
 
 > 안내문은 강제가 아닙니다. 기획 세션에 "직접 고쳐"라고 강하게 요청하면 기획 모델이 직접 파일을 고칠 수도 있습니다. 개발 세션에 맡기려면 "개발 세션에 지시해"라고 요청하세요.
@@ -560,7 +560,7 @@ claude plugin validate --strict .claude-plugin/plugin.json
 
 **수정**
 
-- 기획 세션이 `git stash list`·`git stash show`와 `git tag` 목록(인자 없음, `-l`·`--list`)을 실행하지 못하던 문제를 고쳤습니다. 기획 메인은 이 명령을 변경으로 막았고, 서브에이전트는 목록에 없는 명령으로 막았습니다. 그 밖의 stash·tag(맨 `git stash`, push, pop, drop, clear, `git tag <이름>`, `-a`, `-d` 등)와 `--output`으로 파일을 쓰는 stash list·show는 계속 막습니다.
+- 기획 세션이 `git stash list`·`git stash show`와 `git tag` 목록(인자 없음, `git tag -l`·`git tag --list`)을 실행하지 못하던 문제를 고쳤습니다. 기획 메인은 이 명령을 변경으로 막았고, 서브에이전트는 목록에 없는 명령으로 막았습니다. git이 읽는 방식대로 list·show는 stash 바로 뒤에, `-l`·`--list`는 tag 바로 뒤에 올 때만 읽기로 봅니다. 그 밖의 stash·tag(맨 `git stash`, push, pop, drop, clear, `git tag <이름>`, `-a`, `-d` 등)와, 옵션의 값 자리에 들어가 실제로는 stash push·태그 만들기가 되는 `git stash -m list`·`git tag -m -l v1` 같은 형태, `--output`으로 파일을 쓰는 stash list·show는 계속 막습니다.
 
 ### 0.7.2 (2026-11-04)
 

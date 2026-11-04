@@ -246,14 +246,12 @@ const gitOf = (args: string[]) => {
   return { sub: args[i] ?? '', dir, rest: args.slice(i + 1) }
 }
 
-// git stash·tag 중 읽기만 하는 형태: stash list·show(--output으로 파일을 쓰지 않을 때), 인자 없는 tag,
-// -d·--delete 없는 tag -l·--list. 그 밖의 stash·tag는 바꾸는 것으로 본다. 서브에이전트와 기획 메인 검사가 함께 쓴다.
+// git stash·tag 중 읽기만 하는 형태: stash 바로 뒤의 list·show(--output으로 파일을 쓰지 않을 때), 인자 없는 tag,
+// tag 바로 뒤의 -l·--list(-d·--delete 없이). git은 이 단어가 맨 앞에 올 때만 그렇게 읽는다.
+// 'stash -m list'는 stash push, 'tag -m -l v1'은 태그 만들기다. 서브에이전트와 기획 메인 검사가 함께 쓴다.
 const isStashTagRead = (sub: string, rest: string[]) => {
-  if (sub === 'stash') {
-    const action = rest.find(arg => !arg.startsWith('-')) ?? ''
-    return (action === 'list' || action === 'show') && !rest.some(arg => arg.startsWith('--output'))
-  }
-  const listing = rest.some(arg => arg === '-l' || arg === '--list') && !rest.some(arg => arg === '-d' || arg === '--delete')
+  if (sub === 'stash') return (rest[0] === 'list' || rest[0] === 'show') && !rest.some(arg => arg.startsWith('--output'))
+  const listing = (rest[0] === '-l' || rest[0] === '--list') && !rest.some(arg => arg === '-d' || arg === '--delete')
   return sub === 'tag' && (rest.length === 0 || listing)
 }
 

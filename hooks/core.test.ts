@@ -570,6 +570,10 @@ test('git stash list·show and tag listing are reads, other stash and tag forms 
     'git tag -a v1 -m x',
     'git tag -d v1',
     'git tag -l -d v1',
+    // list·show·-l이 옵션의 값 자리에 있으면 git은 stash push, 태그 만들기로 읽는다.
+    'git stash -m list',
+    'git stash --message show',
+    'git tag -m -l v1',
   ]) {
     expect({ command, ok: isReadOnlyCommand(command), write: isProjectWrite(command, '/Users/me/repo') })
       .toEqual({ command, ok: false, write: true })
