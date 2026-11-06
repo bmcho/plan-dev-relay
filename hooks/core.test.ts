@@ -598,6 +598,37 @@ test('temp folder variables the command does not assign count as temp folders', 
   expect(isProjectWrite('CLAUDE_JOB_DIR=. ; echo x > $CLAUDE_JOB_DIR/tmp/a', '/Users/me/repo')).toBe(true)
 })
 
+test('paths with .. are never temp or outside the project, and ~ counts only when home expands it', () => {
+  const root = '/Users/me/repo'
+  const home = '/Users/me'
+  // 기획 메인: 프로젝트 안일 수 있는 경로는 쓰기로 본다.
+  for (const command of [
+    'echo x > /Users/x/../me/repo/a',
+    'echo x > /tmp/../Users/me/repo/a',
+    'echo x > $TMPDIR/../repo/a',
+    'echo x > ~/repo/a',
+    'echo x > ~me/repo/a',
+    'rm -rf build/../src',
+  ]) {
+    expect({ command, write: isProjectWrite(command, root, home) }).toEqual({ command, write: true })
+  }
+  expect(isProjectWrite('echo x > ~/repo/a', root)).toBe(true)
+  expect(isProjectWrite('echo x > ~/repo/a', root, '')).toBe(true)
+  expect(isProjectWrite('echo x > ~/repo/a', root, '/Users/me/')).toBe(true)
+  for (const command of ['echo x > ~/.claude/projects/p/memory/a.md', 'echo x > /tmp/a', 'echo x > "$CLAUDE_JOB_DIR/tmp/a"']) {
+    expect({ command, write: isProjectWrite(command, root, home) }).toEqual({ command, write: false })
+  }
+  expect(planMay('Bash', 'echo x > ~/repo/a', false, root, home)).toBe(false)
+  expect(planMay('Bash', 'echo x > ~/.claude/projects/p/memory/a.md', false, root, home)).toBe(true)
+  // 서브에이전트: home 없이 본다. ~ 아래라도 Claude Code 작업 임시 폴더는 된다.
+  for (const command of ['echo x > /tmp/../Users/me/repo/a', 'echo x > $TMPDIR/../repo/a', 'cd /tmp/a && cd .. && echo x > b']) {
+    expect({ command, ok: isReadOnlyCommand(command) }).toEqual({ command, ok: false })
+  }
+  for (const command of ['echo x > /tmp/a', 'echo x > $TMPDIR/a', 'echo x > ~/.claude/jobs/abc/tmp/a']) {
+    expect({ command, ok: isReadOnlyCommand(command) }).toEqual({ command, ok: true })
+  }
+})
+
 test('the shell reading follows variables, cd into temp folders, wrappers and process substitution', () => {
   // 읽기 검사(서브에이전트)
   expect(isReadOnlyCommand('T=/tmp/review; grep -rn x src > $T/out.txt')).toBe(true)

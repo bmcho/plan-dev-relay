@@ -62,8 +62,8 @@ Claude Code 세션 두 개를 **기획 세션**과 **개발 세션**으로 짝�
 - 검수 뒤에 기획 세션이 어디까지 스스로 할지는 `/relay`로 정합니다(수동, 오토, 풀오토). 자세한 내용은 [검수와 진행 모드](#검수와-진행-모드-relay)를 보세요.
 - 개발 세션이 아닌 다른 수신자에게 보내는 메시지는 표식만 붙여 그대로 보냅니다.
 - 기획 세션이 고치는 일을 직접 하지 못하게 막고, 거절할 때 이유를 돌려줍니다.
-  - 기획 메인: Bash로 프로젝트 파일을 지우거나 옮기거나 고치는 명령(rm, mv, cp, `sed -i`, 파일을 쓰는 python, 임시 폴더가 아닌 곳으로의 `>`)과 git add·commit·push·checkout 같은 변경을 막습니다. 읽기, 빌드, 테스트와 프로젝트 폴더 밖(임시 폴더, Claude 메모리 등)의 일은 됩니다. git stash list·show(stash 바로 뒤에 올 때)와 git tag 목록(인자 없음, 또는 tag 바로 뒤의 `-l`·`--list`)은 읽기라 됩니다. 빌드 산출물(`build` 등)은 지울 수 있습니다. Write·Edit는 계획 문서를 써야 해서 막지 않습니다.
-  - 서브에이전트: 더 좁게, Bash는 읽기 명령(grep, rg, find, cat, sed -n, git log·diff·show 등), 테스트·검증 실행(gradle test, npm test, pytest, go test, claude plugin test·validate 등), git remote(목록, show, get-url만), git stash list·show(stash 바로 뒤에 올 때), git tag 목록(인자 없음, 또는 tag 바로 뒤의 `-l`·`--list`), 임시 폴더(/tmp, `$TMPDIR`, `$CLAUDE_JOB_DIR/tmp` 등) 쓰기만 됩니다. python은 명령 안의 코드(`-c`, 여기 문서)가 파일을 쓰지 않을 때만 됩니다. Edit, Write, NotebookEdit, Monitor도 쓸 수 없습니다.
+  - 기획 메인: Bash로 프로젝트 파일을 지우거나 옮기거나 고치는 명령(rm, mv, cp, `sed -i`, 파일을 쓰는 python, 임시 폴더가 아닌 곳으로의 `>`)과 git add·commit·push·checkout 같은 변경을 막습니다. 읽기, 빌드, 테스트와 프로젝트 폴더 밖(임시 폴더, Claude 메모리 등)의 일은 됩니다. git stash list·show(stash 바로 뒤에 올 때)와 git tag 목록(인자 없음, 또는 tag 바로 뒤의 `-l`·`--list`)은 읽기라 됩니다. 빌드 산출물(`build` 등)은 지울 수 있습니다. `..`가 든 경로는 임시 폴더나 프로젝트 밖으로 보지 않습니다. `~`, `~/…`는 홈 폴더로 펼쳐 판단하고, 홈을 모르거나 `~이름`(다른 사용자의 홈)이면 막습니다. Write·Edit는 계획 문서를 써야 해서 막지 않습니다.
+  - 서브에이전트: 더 좁게, Bash는 읽기 명령(grep, rg, find, cat, sed -n, git log·diff·show 등), 테스트·검증 실행(gradle test, npm test, pytest, go test, claude plugin test·validate 등), git remote(목록, show, get-url만), git stash list·show(stash 바로 뒤에 올 때), git tag 목록(인자 없음, 또는 tag 바로 뒤의 `-l`·`--list`), 임시 폴더(/tmp, `$TMPDIR`, `$CLAUDE_JOB_DIR/tmp` 등. `..`가 든 경로는 제외) 쓰기만 됩니다. python은 명령 안의 코드(`-c`, 여기 문서)가 파일을 쓰지 않을 때만 됩니다. Edit, Write, NotebookEdit, Monitor도 쓸 수 없습니다.
   - 이 Claude Code에는 Grep·Glob 도구가 없어 찾기도 Bash로 하므로, Bash를 통째로 막지 않고 명령을 읽어서 가립니다. 셸 문법과 python 코드를 흔한 모양으로만 읽으므로 보안 장치는 아닙니다.
 
 > 안내문은 강제가 아닙니다. 기획 세션에 "직접 고쳐"라고 강하게 요청하면 기획 모델이 직접 파일을 고칠 수도 있습니다. 개발 세션에 맡기려면 "개발 세션에 지시해"라고 요청하세요.
@@ -555,6 +555,14 @@ claude plugin validate --strict .claude-plugin/plugin.json
 ## 10. 변경 내역
 
 버전을 올리는 기준은 [새 버전 배포](#새-버전-배포)를 보세요.
+
+### 0.7.4 (2026-11-06)
+
+**수정**
+
+- 임시 폴더·프로젝트 밖 판정이 경로를 글자로만 비교해서 `..`와 `~` 경로에 속던 문제를 고쳤습니다.
+  - `..`가 든 경로(`/tmp/../Users/me/repo/a`, `$TMPDIR/../repo/a`, `/Users/x/../me/repo/a`)는 임시 폴더로도 프로젝트 밖으로도 보지 않습니다. 그래서 `cd ..` 뒤 상대 경로에 쓰는 것도 막힙니다. 기획 메인의 빌드 산출물 지우기도 `..`가 들면(`rm -rf build/../src`) 막습니다.
+  - 기획 메인은 `~`, `~/…`를 홈 폴더(`HOME`, Windows는 `USERPROFILE`)로 펼쳐 판단합니다. 홈을 모르거나 `~이름`(다른 사용자의 홈)이면 막습니다. 전에는 `~` 경로를 모두 프로젝트 밖으로 봐서 `~/repo/a`처럼 프로젝트 안을 가리켜도 통과했습니다.
 
 ### 0.7.3 (2026-11-04)
 

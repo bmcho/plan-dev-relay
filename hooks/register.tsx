@@ -715,7 +715,9 @@ export const register: Register = (on, options) => {
     const isSubagent = e.agentId !== undefined
     // 메인의 Bash만 프로젝트 폴더(세션이 시작한 폴더) 기준으로 본다.
     const root = mine === 'plan' && !isSubagent && e.tool === 'Bash' ? await $.session.root() : ''
-    if (mine === 'plan' && !planMay(e.tool, e.tool === 'Bash' ? e.command : undefined, isSubagent, root)) {
+    // ~ 경로를 펼칠 홈 폴더. Windows는 홈 폴더가 HOME 대신 USERPROFILE에 있다.
+    const home = root === '' ? '' : ((await $.env.get('HOME')) ?? (await $.env.get('USERPROFILE')) ?? '')
+    if (mine === 'plan' && !planMay(e.tool, e.tool === 'Bash' ? e.command : undefined, isSubagent, root, home)) {
       return { deny: isSubagent ? PLAN_SUBAGENT_DENY : PLAN_MAIN_DENY }
     }
     // pane의 '지금 하는 일'. 남기지 못해도 도구 호출은 막지 않는다(아래 .catch는 기획 세션에서 호출을 막는다).

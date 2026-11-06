@@ -85,6 +85,8 @@ const WRAPPERS = new Set(['caffeinate', 'nice', 'timeout', 'env', 'command'])
 const TMP_PATH = /^(?:\/tmp\/|\/private\/tmp\/|\/var\/folders\/|\S*\/\.claude\/jobs\/[^/]+\/tmp(?:\/|$))/
 // 이 명령에서 대입하지 않아 expand가 그대로 둔 임시 폴더 변수(${이름}은 $이름으로 바꿔 본다)
 const TMP_VAR = /^\$(?:TMPDIR|TMP|TEMP|CLAUDE_JOB_DIR\/tmp)(?:\/|$)/
+// 경로의 .. 마디. 글자 비교로는 어디를 가리키는지 알 수 없다(/tmp/../repo)
+const DOTDOT = /(?:^|[\\/])\.\.(?:[\\/]|$)/
 // 지워도 되는 빌드 산출물(기획 메인만)
 const BUILD_OUTPUT = /(?:^|\/)(?:build|dist|target|out|node_modules|\.gradle|coverage)(?:\/|$)/
 // 출력 돌리기 표시. splitCommand가 대상 경로 앞에 붙여 두고, 단어를 읽을 때 따로 본다.
@@ -196,9 +198,9 @@ const splitCommand = (command: string): Split => {
 }
 
 // 명령을 차례로 읽으며 기억하는 것: 대입한 변수와, 지금 바깥 폴더에 있는지(cd).
-// root가 있으면(기획 메인) 그 폴더 밖이 바깥이고, 없으면(서브에이전트) 임시 폴더만 바깥이다.
-type ShellState = { vars: Map<string, string>; inTemp: boolean; root?: string }
-const newState = (root?: string): ShellState => ({ vars: new Map(), inTemp: false, root })
+// root가 있으면(기획 메인) 그 폴더 밖이 바깥이고, 없으면(서브에이전트) 임시 폴더만 바깥이다. home은 ~ 경로를 펼칠 때 쓴다.
+type ShellState = { vars: Map<string, string>; inTemp: boolean; root?: string; home?: string }
+const newState = (root?: string, home?: string): ShellState => ({ vars: new Map(), inTemp: false, root, home })
 
 const unquote = (word: string) => word.replace(/^(['"])([\s\S]*)\1$/, '$2')
 
@@ -206,11 +208,17 @@ const unquote = (word: string) => word.replace(/^(['"])([\s\S]*)\1$/, '$2')
 const expand = (word: string, state: ShellState) =>
   unquote(word).replace(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/, (all: string, name: string) => state.vars.get(name) ?? all)
 
-// 경로가 바깥(임시 폴더, 또는 root 밖)인지. 상대 경로는 지금 바깥에 있을 때만 그렇다. ~ 경로는 root 밖으로 본다.
+// 경로가 바깥(임시 폴더, 또는 root 밖)인지. 상대 경로는 지금 바깥에 있을 때만 그렇다.
+// ..가 든 경로, home을 모르는 ~, 다른 사용자의 ~이름은 어디인지 모르므로 바깥으로 보지 않는다.
 const isTemp = (word: string, state: ShellState) => {
-  const path = expand(word, state)
+  let path = expand(word, state)
+  if (DOTDOT.test(path)) return false
+  // home 끝의 /를 떼야 ~/repo가 //repo로 펼쳐져 root 비교를 비켜 가지 않는다
+  const home = (state.home ?? '').replace(/[\\/]+$/, '')
+  if (home !== '' && /^~(?:[\\/]|$)/.test(path)) path = expandHome(path, home)
   if (TMP_PATH.test(path) || TMP_VAR.test(path.replace(/^\$\{(\w+)\}/, '$$$1'))) return true
-  if (!/^[/~$]/.test(path)) return state.inTemp
+  if (path.startsWith('~')) return false
+  if (!/^[/$]/.test(path)) return state.inTemp
   const { root } = state
   return root !== undefined && !path.startsWith('$') && path !== root && !path.startsWith(`${root}/`)
 }
@@ -320,7 +328,8 @@ const isWritePart = (part: string, bodies: string[], state: ShellState) => {
   const { name, args, redirects } = commandOf(part, state)
   if (!redirects.every(target => isTemp(target, state))) return true
   const paths = args.filter(arg => !arg.startsWith('-'))
-  const safe = (path: string) => isTemp(path, state) || BUILD_OUTPUT.test(expand(path, state))
+  const safe = (path: string) =>
+    isTemp(path, state) || (BUILD_OUTPUT.test(expand(path, state)) && !DOTDOT.test(expand(path, state)))
   if (name === 'cd') state.inTemp = isTemp(args[0] ?? '~', state)
   if (PROJECT_WRITE.has(name)) {
     const written = COPY_LIKE.has(name) ? paths.slice(-1) : paths
@@ -346,20 +355,20 @@ const isWritePart = (part: string, bodies: string[], state: ShellState) => {
 }
 
 // 기획 메인의 Bash 명령이 프로젝트(root 폴더)의 파일이나 git 기록·원격을 바꾸는지 본다.
-// root 밖(임시 폴더, Claude 메모리 등)에 쓰는 것은 바꾸지 않는 것이다.
-export function isProjectWrite(command: string, root: string): boolean {
+// root 밖(임시 폴더, Claude 메모리 등)에 쓰는 것은 바꾸지 않는 것이다. home이 없으면 ~ 경로는 프로젝트 안일 수 있다고 본다.
+export function isProjectWrite(command: string, root: string, home?: string): boolean {
   const split = splitCommand(command)
-  const state = newState(root)
+  const state = newState(root, home)
   return !split.ok || split.parts.some(part => isWritePart(part, split.bodies, state))
 }
 
 // 기획 세션에서 이 도구 호출을 받아도 되는지.
 // 서브에이전트: 파일 수정 도구를 못 쓰고, Bash는 읽기, 테스트, 임시 폴더 쓰기만 된다.
 // 메인: 계획 문서를 Write·Edit로 쓰고 빌드·테스트도 돌린다. Bash로 프로젝트(root 폴더) 파일이나 git 기록·원격을 바꾸는 것만 막는다.
-export const planMay = (tool: string, command: string | undefined, isSubagent: boolean, root: string) =>
+export const planMay = (tool: string, command: string | undefined, isSubagent: boolean, root: string, home?: string) =>
   isSubagent
     ? !PLAN_SUBAGENT_BLOCKED.has(tool) && (tool !== 'Bash' || isReadOnlyCommand(command ?? ''))
-    : tool !== 'Bash' || !isProjectWrite(command ?? '', root)
+    : tool !== 'Bash' || !isProjectWrite(command ?? '', root, home)
 
 export const PLAN_SUBAGENT_DENY =
   '기획 세션의 서브에이전트는 파일을 고칠 수 없습니다. Edit, Write는 쓸 수 없고, Bash는 읽기 명령(grep, rg, find, cat, git log·diff·show 등)과 테스트 실행만 됩니다. 고칠 일은 기획 세션이 개발 세션에 지시합니다.'
