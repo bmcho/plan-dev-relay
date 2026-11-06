@@ -83,7 +83,8 @@ const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/
 const WRAPPERS = new Set(['caffeinate', 'nice', 'timeout', 'env', 'command'])
 // 쓰기를 허용하는 곳: 임시 폴더(/tmp, macOS의 TMPDIR, Claude Code 작업 폴더의 tmp)
 // 작업 폴더의 tmp는 / 또는 ~/로 시작하는 경로만 본다. foo/.claude/jobs/x/tmp는 프로젝트 안의 상대 경로다.
-const TMP_PATH = /^(?:\/tmp\/|\/private\/tmp\/|\/var\/folders\/|(?:~|\/\S*)\/\.claude\/jobs\/[^/]+\/tmp(?:\/|$))/
+// /tmp 등은 그 폴더 자체(끝에 / 없음)도 임시 폴더다. /tmpfoo처럼 이름이 이어지면 아니다.
+const TMP_PATH = /^(?:(?:\/tmp|\/private\/tmp|\/var\/folders)(?:\/|$)|(?:~|\/\S*)\/\.claude\/jobs\/[^/]+\/tmp(?:\/|$))/
 // 이 명령에서 대입하지 않아 expand가 그대로 둔 임시 폴더 변수(${이름}은 $이름으로 바꿔 본다)
 const TMP_VAR = /^\$(?:TMPDIR|TMP|TEMP|CLAUDE_JOB_DIR\/tmp)(?:\/|$)/
 // 경로의 .. 마디. 글자 비교로는 어디를 가리키는지 알 수 없다(/tmp/../repo)

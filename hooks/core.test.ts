@@ -712,6 +712,25 @@ test("single-quoted $ is a literal folder, and only / or ~/ paths match the Clau
   }
 })
 
+test('/tmp, /private/tmp and /var/folders count as temp without a trailing slash, but longer names do not', () => {
+  // 서브에이전트
+  for (const command of ['cd /tmp && echo x > a', 'cd /private/tmp && echo x > a', 'cd /var/folders && echo x > a', 'echo x > /tmp/a']) {
+    expect({ command, ok: isReadOnlyCommand(command) }).toEqual({ command, ok: true })
+  }
+  for (const command of [
+    'echo x > /tmpfoo/a',
+    'cd /tmpx && echo x > a',
+    'echo x > /private/tmpx/a',
+    'cd /tmp/a && cd .. && echo x > b',
+    'echo x > foo/.claude/jobs/x/tmp/a',
+  ]) {
+    expect({ command, ok: isReadOnlyCommand(command) }).toEqual({ command, ok: false })
+  }
+  // 기획 메인은 그대로다.
+  expect(isProjectWrite('cd /tmp && echo x > a', '/Users/me/repo', '/Users/me')).toBe(false)
+  expect(isProjectWrite('echo x > /tmp/../Users/me/repo/a', '/Users/me/repo', '/Users/me')).toBe(true)
+})
+
 test('the shell reading follows variables, cd into temp folders, wrappers and process substitution', () => {
   // 읽기 검사(서브에이전트)
   expect(isReadOnlyCommand('T=/tmp/review; grep -rn x src > $T/out.txt')).toBe(true)
