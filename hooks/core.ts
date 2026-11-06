@@ -82,7 +82,8 @@ const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/
 // 다른 명령을 실행만 하는 명령. 감싼 명령을 대신 본다. timeout은 시간 인자 하나를 더 받는다.
 const WRAPPERS = new Set(['caffeinate', 'nice', 'timeout', 'env', 'command'])
 // 쓰기를 허용하는 곳: 임시 폴더(/tmp, macOS의 TMPDIR, Claude Code 작업 폴더의 tmp)
-const TMP_PATH = /^(?:\/tmp\/|\/private\/tmp\/|\/var\/folders\/|\S*\/\.claude\/jobs\/[^/]+\/tmp(?:\/|$))/
+// 작업 폴더의 tmp는 / 또는 ~/로 시작하는 경로만 본다. foo/.claude/jobs/x/tmp는 프로젝트 안의 상대 경로다.
+const TMP_PATH = /^(?:\/tmp\/|\/private\/tmp\/|\/var\/folders\/|(?:~|\/\S*)\/\.claude\/jobs\/[^/]+\/tmp(?:\/|$))/
 // 이 명령에서 대입하지 않아 expand가 그대로 둔 임시 폴더 변수(${이름}은 $이름으로 바꿔 본다)
 const TMP_VAR = /^\$(?:TMPDIR|TMP|TEMP|CLAUDE_JOB_DIR\/tmp)(?:\/|$)/
 // 경로의 .. 마디. 글자 비교로는 어디를 가리키는지 알 수 없다(/tmp/../repo)
@@ -204,9 +205,11 @@ const newState = (root?: string, home?: string): ShellState => ({ vars: new Map(
 
 const unquote = (word: string) => word.replace(/^(['"])([\s\S]*)\1$/, '$2')
 
-// 경로 앞의 $이름, ${이름}을 이 명령에서 대입한 값으로 바꾼다.
+// 경로 앞의 $이름, ${이름}을 이 명령에서 대입한 값으로 바꾼다. 작은따옴표 안은 셸처럼 펼치지 않는다.
 const expand = (word: string, state: ShellState) =>
-  unquote(word).replace(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/, (all: string, name: string) => state.vars.get(name) ?? all)
+  word.startsWith("'")
+    ? unquote(word)
+    : unquote(word).replace(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/, (all: string, name: string) => state.vars.get(name) ?? all)
 
 // 겹친 /를 하나로 줄이고 . 마디(/./, 끝의 /., 맨 앞의 ./)를 뗀다. ..는 isTemp가 먼저 막는다.
 const tidy = (path: string) => {
@@ -219,8 +222,8 @@ const tidy = (path: string) => {
 const isTemp = (word: string, state: ShellState) => {
   let path = expand(word, state)
   if (DOTDOT.test(path)) return false
-  // 셸은 따옴표 안의 ~를 펼치지 않는다. 글자 그대로의 ~ 폴더, 곧 지금 폴더 기준의 상대 경로다
-  if (/^['"]/.test(word) && path.startsWith('~')) return state.inTemp
+  // 셸은 따옴표 안의 ~와 작은따옴표 안의 $를 펼치지 않는다. 글자 그대로의 폴더, 곧 지금 폴더 기준의 상대 경로다
+  if ((/^['"]/.test(word) && path.startsWith('~')) || (word.startsWith("'") && path.startsWith('$'))) return state.inTemp
   if (state.home && /^~(?:[\\/]|$)/.test(path)) path = expandHome(path, state.home)
   path = tidy(path)
   if (TMP_PATH.test(path) || TMP_VAR.test(path.replace(/^\$\{(\w+)\}/, '$$$1'))) return true

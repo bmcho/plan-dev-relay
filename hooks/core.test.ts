@@ -674,6 +674,44 @@ test('paths are tidied, compared with the project ignoring case, and the project
   expect(isReadOnlyCommand('echo x > /tmp//a')).toBe(true)
 })
 
+test("single-quoted $ is a literal folder, and only / or ~/ paths match the Claude Code job temp folder", () => {
+  const root = '/Users/me/repo'
+  const home = '/Users/me'
+  // 기획 메인과 서브에이전트 모두 막는다.
+  for (const command of [
+    "echo x > '$TMPDIR/a'",
+    'echo x > foo/.claude/jobs/x/tmp/a',
+    "X=/tmp; echo x > '$X/a'",
+    'echo x > ~me/.claude/jobs/x/tmp/a',
+    // 작은따옴표로 대입한 값도 펼치지 않는다. T는 글자 그대로 $X다.
+    "X=/tmp; T='$X'; echo x > $T/a",
+  ]) {
+    expect({ command, write: isProjectWrite(command, root, home), ok: isReadOnlyCommand(command) })
+      .toEqual({ command, write: true, ok: false })
+  }
+  for (const command of [
+    'echo x > "$TMPDIR/a"',
+    'echo x > $TMPDIR/a',
+    'echo x > /Users/me/.claude/jobs/abc/tmp/a',
+    'echo x > ~/.claude/jobs/abc/tmp/a',
+    'J=/Users/me/.claude/jobs/abc/tmp; echo x > $J/a',
+    // 글자 그대로의 $X 폴더도 지금 폴더가 /tmp/x면 /tmp/x 안이다.
+    "cd /tmp/x && echo x > '$X/a'",
+  ]) {
+    expect({ command, write: isProjectWrite(command, root, home) }).toEqual({ command, write: false })
+  }
+  for (const command of [
+    'echo x > "$TMPDIR/a"',
+    'echo x > $TMPDIR/a',
+    'echo x > ~/.claude/jobs/abc/tmp/a',
+    'echo x > /Users/me/.claude/jobs/abc/tmp/a',
+    'cd ~/.claude/jobs/abc/tmp && echo x > a',
+    "cd /tmp/x && echo x > '$X/a'",
+  ]) {
+    expect({ command, ok: isReadOnlyCommand(command) }).toEqual({ command, ok: true })
+  }
+})
+
 test('the shell reading follows variables, cd into temp folders, wrappers and process substitution', () => {
   // 읽기 검사(서브에이전트)
   expect(isReadOnlyCommand('T=/tmp/review; grep -rn x src > $T/out.txt')).toBe(true)
