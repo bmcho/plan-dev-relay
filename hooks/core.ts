@@ -208,19 +208,30 @@ const unquote = (word: string) => word.replace(/^(['"])([\s\S]*)\1$/, '$2')
 const expand = (word: string, state: ShellState) =>
   unquote(word).replace(/^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/, (all: string, name: string) => state.vars.get(name) ?? all)
 
+// 겹친 /를 하나로 줄이고 . 마디(/./, 끝의 /., 맨 앞의 ./)를 뗀다. ..는 isTemp가 먼저 막는다.
+const tidy = (path: string) => {
+  const out = path.replace(/\/+/g, '/').replace(/\/\.(?=\/|$)/g, '').replace(/^\.\//, '')
+  return out === '' && path.startsWith('/') ? '/' : out
+}
+
 // 경로가 바깥(임시 폴더, 또는 root 밖)인지. 상대 경로는 지금 바깥에 있을 때만 그렇다.
 // ..가 든 경로, home을 모르는 ~, 다른 사용자의 ~이름은 어디인지 모르므로 바깥으로 보지 않는다.
 const isTemp = (word: string, state: ShellState) => {
   let path = expand(word, state)
   if (DOTDOT.test(path)) return false
-  // home 끝의 /를 떼야 ~/repo가 //repo로 펼쳐져 root 비교를 비켜 가지 않는다
-  const home = (state.home ?? '').replace(/[\\/]+$/, '')
-  if (home !== '' && /^~(?:[\\/]|$)/.test(path)) path = expandHome(path, home)
+  // 셸은 따옴표 안의 ~를 펼치지 않는다. 글자 그대로의 ~ 폴더, 곧 지금 폴더 기준의 상대 경로다
+  if (/^['"]/.test(word) && path.startsWith('~')) return state.inTemp
+  if (state.home && /^~(?:[\\/]|$)/.test(path)) path = expandHome(path, state.home)
+  path = tidy(path)
   if (TMP_PATH.test(path) || TMP_VAR.test(path.replace(/^\$\{(\w+)\}/, '$$$1'))) return true
   if (path.startsWith('~')) return false
   if (!/^[/$]/.test(path)) return state.inTemp
-  const { root } = state
-  return root !== undefined && !path.startsWith('$') && path !== root && !path.startsWith(`${root}/`)
+  if (state.root === undefined || path.startsWith('$')) return false
+  // root와는 대소문자 없이 비교한다(macOS 기본 파일 시스템). root 안, root 자체, root를 품은 상위 폴더(/ 포함)는
+  // 바깥이 아니다. 상위 폴더로 cd한 뒤의 상대 경로(cd ~ && echo x > repo/a)는 프로젝트 안일 수 있다.
+  const p = path.toLowerCase()
+  const r = state.root.toLowerCase().replace(/\/+$/, '')
+  return p !== r && !p.startsWith(`${r}/`) && !r.startsWith(p.endsWith('/') ? p : `${p}/`)
 }
 
 // 조각 하나를 명령 이름, 인자, 출력 대상으로 나눈다. 셸 문법 단어, 변수 대입, 감싸는 명령은 건너뛴다.

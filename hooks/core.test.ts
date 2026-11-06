@@ -639,6 +639,41 @@ test('paths with .. are never temp or outside the project, and ~ counts only whe
   }
 })
 
+test('paths are tidied, compared with the project ignoring case, and the project folders above root are not outside', () => {
+  const root = '/Users/me/repo'
+  const home = '/Users/me'
+  // 기획 메인: 프로젝트 안을 가리키거나, 프로젝트를 품은 상위 폴더 기준의 상대 경로는 쓰기로 본다.
+  for (const command of [
+    'echo x > /Users/me//repo/a',
+    'echo x > /Users/me/./repo/a',
+    'echo x > /users/me/repo/a',
+    'echo x > /USERS/ME/REPO/a',
+    'echo x > "~/.claude/a"',
+    'cd ~ && echo x > repo/a',
+    'cd && echo x > repo/a',
+    'cd /Users/me && echo x > repo/a',
+    'cd /users/me && echo x > repo/a',
+    'cd / && echo x > Users/me/repo/a',
+    'rm -rf ~',
+  ]) {
+    expect({ command, write: isProjectWrite(command, root, home) }).toEqual({ command, write: true })
+  }
+  for (const command of [
+    'echo x > ~/.claude/projects/p/memory/a.md',
+    'echo x > /Users/me/notes.txt',
+    'echo x > /tmp/a',
+    'echo x > "$CLAUDE_JOB_DIR/tmp/a"',
+    'cd /tmp && echo x > a',
+    'cd ~/.claude/projects/p/memory && echo x > a.md',
+    'cd /Users/me/repo-other && echo x > a',
+    // 따옴표 안의 ~는 글자 그대로의 폴더다. 지금 폴더가 /tmp면 /tmp/~/a에 쓴다.
+    'cd /tmp && echo x > "~/a"',
+  ]) {
+    expect({ command, write: isProjectWrite(command, root, home) }).toEqual({ command, write: false })
+  }
+  expect(isReadOnlyCommand('echo x > /tmp//a')).toBe(true)
+})
+
 test('the shell reading follows variables, cd into temp folders, wrappers and process substitution', () => {
   // 읽기 검사(서브에이전트)
   expect(isReadOnlyCommand('T=/tmp/review; grep -rn x src > $T/out.txt')).toBe(true)
