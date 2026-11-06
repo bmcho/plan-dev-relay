@@ -28,6 +28,8 @@ type World = {
   taskList?: unknown
   // Windows 컴퓨터를 흉내 낸다: /bin/sh가 없고, 홈 폴더는 HOME 대신 USERPROFILE에 있고, 경로는 역슬래시로 나눈다.
   windows?: boolean
+  // mod가 자기 폴더에서 읽는 .claude-plugin/plugin.json. 없으면 읽기가 실패한다.
+  pluginJson?: string
 }
 
 // 엔진 바닥을 흉내 낸다. 테스트의 on() hook은 plugin 아래에 놓인다.
@@ -43,6 +45,7 @@ const engine = (on: On, sessionId: string, world: World) => {
   on('fs.exists', ($, e) => ({ value: e.path === '/bin/sh' ? !windows : world.files.has(e.path) }))
   // 실제 엔진처럼 없는 파일 읽기는 예외로 끝난다.
   on('fs.read', ($, e) => {
+    if (e.path.endsWith('/.claude-plugin/plugin.json') && world.pluginJson !== undefined) return { value: world.pluginJson }
     const text = world.files.get(e.path)
     if (text === undefined) throw new Error(`ENOENT: ${e.path}`)
     return { value: text }
@@ -148,6 +151,35 @@ test('/role rejects an unknown argument', async ($, on) => {
 
   expect(result.text).toContain('사용법')
   expect(world.files.size).toBe(0)
+})
+
+test('/role shows the mod version read once at session start, and no version when plugin.json cannot be read', async ($, on) => {
+  const world = newWorld()
+  world.pluginJson = '{"name": "plan-dev-relay", "version": "1.2.3"}'
+  engine(on, 'S-PLAN', world)
+  const start = { cwd: '/Users/bmcho/Documents/git/control-center', surface: 'terminal', isInteractive: true }
+  await $.session.start(start as never)
+
+  // 엔진이 결과 앞에 'plan-dev-relay:'를 붙이므로 버전은 그 바로 뒤, 결과의 맨 앞에 온다.
+  const plan = await $.command.run({ command: 'role', args: 'plan' } as never)
+  expect(plan.text).toBe('v1.2.3 · 기획 역할로 등록했습니다. (repo: control-center)')
+
+  // /role을 실행할 때 다시 읽지 않는다. 폴더의 plugin.json이 바뀌어도 불러온 때의 버전이다.
+  world.pluginJson = '{"name": "plan-dev-relay", "version": "9.9.9"}'
+  const status = await $.command.run({ command: 'role', args: '' } as never)
+  expect(status.text?.startsWith('v1.2.3 · 기획 역할.')).toBe(true)
+
+  // 다른 명령의 출력은 그대로다.
+  for (const command of ['relay', 'subagents', 'agentEffort']) {
+    const other = await $.command.run({ command, args: '' } as never)
+    expect({ command, hasVersion: other.text?.includes('1.2.3') }).toEqual({ command, hasVersion: false })
+  }
+
+  // 다시 불러올 때 plugin.json을 못 읽으면 버전 없이 보이고 /role은 성공한다.
+  world.pluginJson = undefined
+  await $.session.start(start as never)
+  const again = await $.command.run({ command: 'role', args: 'plan' } as never)
+  expect(again.text).toBe('기획 역할로 등록했습니다. (repo: control-center)')
 })
 
 test('a session without a role passes peer messages through and writes nothing', async ($, on) => {

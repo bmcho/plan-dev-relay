@@ -432,6 +432,16 @@ export const expandHome = (path: string, home: string) =>
 
 export const baseName = (path: string) => path.split(/[\\/]/).filter(Boolean).pop() ?? ''
 
+// plugin.json 글의 version. 깨진 JSON이거나 version이 문자열이 아니면 undefined다.
+export const versionOf = (text: string): string | undefined => {
+  try {
+    const version: unknown = JSON.parse(text).version
+    return typeof version === 'string' && version !== '' ? version : undefined
+  } catch {
+    return undefined
+  }
+}
+
 // dir: 한 repo의 로그 폴더 (<logRoot>/<repo 이름>)
 export const rolesPath = (dir: string) => `${dir}/roles.json`
 

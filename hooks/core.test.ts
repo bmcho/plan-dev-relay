@@ -39,6 +39,7 @@ import {
   timeStamp,
   todoPath,
   unwrap,
+  versionOf,
   withTag,
 } from './core'
 
@@ -178,6 +179,15 @@ test('expandHome replaces a leading ~ with the home folder only', () => {
   expect(expandHome('~', '/Users/kim')).toBe('/Users/kim')
   expect(expandHome('/var/logs', '/Users/kim')).toBe('/var/logs')
   expect(expandHome('/var/~logs', '/Users/kim')).toBe('/var/~logs')
+})
+
+test('versionOf reads the version from plugin.json text and gives undefined when it cannot', () => {
+  expect(versionOf('{"name": "plan-dev-relay", "version": "0.8.0", "license": "MIT"}')).toBe('0.8.0')
+  expect(versionOf('{"name": "plan-dev-relay", "version": ')).toBeUndefined()
+  expect(versionOf('{"name": "plan-dev-relay"}')).toBeUndefined()
+  expect(versionOf('{"version": 8}')).toBeUndefined()
+  expect(versionOf('{"version": ""}')).toBeUndefined()
+  expect(versionOf('null')).toBeUndefined()
 })
 
 test('parseRelayArgs reads status, manual, auto and an auto limit of 1 to 10', () => {

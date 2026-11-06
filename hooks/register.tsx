@@ -57,6 +57,7 @@ import {
   SUBAGENTS_USAGE,
   todoPath,
   unwrap,
+  versionOf,
   withTag,
   type Roles,
   type Sender,
@@ -385,6 +386,9 @@ const BUSY = new Set(['pending', 'running', 'waiting'])
 const AGENT_PANE = { id: 'subagents', title: '서브에이전트', columns: 52 }
 // 터미널이 pane을 오른쪽에 붙이는지(전체 화면). band를 그릴 때 알게 되고, 모르면 undefined다.
 let docks: boolean | undefined
+// 불러온 mod의 버전. session.start에서 plugin.json을 한 번 읽어 두고 /role이 보인다.
+// 폴더의 plugin.json이 나중에 바뀌어도 다시 불러오기 전까지는 지금 돌고 있는 코드의 버전이다. 못 읽으면 undefined다.
+let version: string | undefined
 
 // pane을 못 열어도 다른 일은 계속한다.
 const openAgentPane = ($: EngineInterface) =>
@@ -429,6 +433,8 @@ const sessionModel = async ($: EngineInterface) => {
 }
 
 const USAGE = '사용법: /role plan | dev | off'
+// /role 결과 앞에 실행 중인 버전을 붙인다. 엔진이 그 앞에 플러그인 이름(plan-dev-relay:)을 붙인다.
+const withVersion = (text: string) => (version === undefined ? text : `v${version} · ${text}`)
 
 export const register: Register = (on, options) => {
   // hot reload 때 module 변수는 초기화된다. 다음 turn.start에서 다시 켠다.
@@ -464,6 +470,12 @@ export const register: Register = (on, options) => {
       description: `plan-dev-relay 서브에이전트의 모델별 effort. ${AGENT_EFFORT_USAGE}`,
       argumentHint: '[model] [effort]',
     })
+    // 실행 중인 버전은 불러올 때 한 번만 읽는다. 세션 시작과, 이 모듈이 바뀐 다시 불러오기 때 이 hook이 돈다.
+    try {
+      version = versionOf(await $.fs.read(`${$.plugin.root}/.claude-plugin/plugin.json`))
+    } catch {
+      version = undefined
+    }
     // 다시 불러오거나 이어 연 세션에 지난 에이전트 목록이 남지 않게 다시 센다.
     // 다시 불러오면 타이머가 사라지므로, 에이전트가 일하는 중이면 캐릭터를 다시 움직인다.
     const working = await refreshAgents($)
@@ -484,11 +496,11 @@ export const register: Register = (on, options) => {
 
     if (arg === '') {
       const mine = await read($, role)
-      if (mine === null) return { text: `역할 없음. ${USAGE}` }
+      if (mine === null) return { text: withVersion(`역할 없음. ${USAGE}`) }
       const roles = await readRoles($, await read($, dir))
       const paired = mine === 'plan' ? roles.dev : roles.plan
       return {
-        text: `${roleLabel(mine)} 역할. 상대 세션: ${paired?.sessionId ?? '없음'}`,
+        text: withVersion(`${roleLabel(mine)} 역할. 상대 세션: ${paired?.sessionId ?? '없음'}`),
       }
     }
 
@@ -513,10 +525,10 @@ export const register: Register = (on, options) => {
       }
       await update($, partner, () => null)
       await update($, role, () => null)
-      return { text: '역할을 지웠습니다.' }
+      return { text: withVersion('역할을 지웠습니다.') }
     }
 
-    if (arg !== 'plan' && arg !== 'dev') return { text: USAGE }
+    if (arg !== 'plan' && arg !== 'dev') return { text: withVersion(USAGE) }
 
     const next: Role = arg
     const name = await repoName($)
@@ -539,7 +551,7 @@ export const register: Register = (on, options) => {
     await log($, `[${roleLabel(next)}] 역할 등록`, `session: ${sessionId}`)
     // 시스템 프롬프트는 세션 시작 때 그려지므로, 역할 안내는 명령 결과의 context로 모델에 넘긴다.
     return {
-      text: `${roleLabel(next)} 역할로 등록했습니다. (repo: ${name})`,
+      text: withVersion(`${roleLabel(next)} 역할로 등록했습니다. (repo: ${name})`),
       context: [next === 'plan' ? planGuide() : devGuide()],
     }
   })
@@ -548,7 +560,9 @@ export const register: Register = (on, options) => {
     .catch(($, e, next) => {
       const reason = next.error.kind === 'timeout' ? '시간 초과' : (next.error.message ?? '알 수 없는 오류')
       return {
-        text: `역할 명령 실패 (${reason}). 로그 폴더(설정의 logRoot)에 쓸 수 있는지 확인하세요. 데스크톱 앱은 문서 폴더 접근을 따로 허용해야 할 수 있습니다.`,
+        text: withVersion(
+          `역할 명령 실패 (${reason}). 로그 폴더(설정의 logRoot)에 쓸 수 있는지 확인하세요. 데스크톱 앱은 문서 폴더 접근을 따로 허용해야 할 수 있습니다.`,
+        ),
       }
     })
 
